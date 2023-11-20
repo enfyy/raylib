@@ -21,8 +21,8 @@
 *           Custom flag for rcore on target platform -not used-
 *
 *   DEPENDENCIES:
-*       Android NDK - Provides C API to access Android functionality
-*       gestures - Gestures system for touch-ready devices (or simulated from mouse inputs)
+*       - Android NDK: Provides C API to access Android functionality
+*       - gestures: Gestures system for touch-ready devices (or simulated from mouse inputs)
 *
 *
 *   LICENSE: zlib/libpng
@@ -80,8 +80,8 @@ static PlatformData platform = { 0 };   // Platform specific data
 //----------------------------------------------------------------------------------
 // Module Internal Functions Declaration
 //----------------------------------------------------------------------------------
-static int InitPlatform(void);          // Initialize platform (graphics, inputs and more)
-static void ClosePlatform(void);        // Close platform
+int InitPlatform(void);          // Initialize platform (graphics, inputs and more)
+void ClosePlatform(void);        // Close platform
 
 static void AndroidCommandCallback(struct android_app *app, int32_t cmd);           // Process Android activity lifecycle commands
 static int32_t AndroidInputCallback(struct android_app *app, AInputEvent *event);   // Process Android inputs
@@ -135,96 +135,6 @@ struct android_app *GetAndroidApp(void)
 //----------------------------------------------------------------------------------
 // Module Functions Definition: Window and Graphics Device
 //----------------------------------------------------------------------------------
-
-// Initialize window and OpenGL context
-// NOTE: data parameter could be used to pass any kind of required data to the initialization
-void InitWindow(int width, int height, const char *title)
-{
-    TRACELOG(LOG_INFO, "Initializing raylib %s", RAYLIB_VERSION);
-
-    TRACELOG(LOG_INFO, "Supported raylib modules:");
-    TRACELOG(LOG_INFO, "    > rcore:..... loaded (mandatory)");
-    TRACELOG(LOG_INFO, "    > rlgl:...... loaded (mandatory)");
-#if defined(SUPPORT_MODULE_RSHAPES)
-    TRACELOG(LOG_INFO, "    > rshapes:... loaded (optional)");
-#else
-    TRACELOG(LOG_INFO, "    > rshapes:... not loaded (optional)");
-#endif
-#if defined(SUPPORT_MODULE_RTEXTURES)
-    TRACELOG(LOG_INFO, "    > rtextures:. loaded (optional)");
-#else
-    TRACELOG(LOG_INFO, "    > rtextures:. not loaded (optional)");
-#endif
-#if defined(SUPPORT_MODULE_RTEXT)
-    TRACELOG(LOG_INFO, "    > rtext:..... loaded (optional)");
-#else
-    TRACELOG(LOG_INFO, "    > rtext:..... not loaded (optional)");
-#endif
-#if defined(SUPPORT_MODULE_RMODELS)
-    TRACELOG(LOG_INFO, "    > rmodels:... loaded (optional)");
-#else
-    TRACELOG(LOG_INFO, "    > rmodels:... not loaded (optional)");
-#endif
-#if defined(SUPPORT_MODULE_RAUDIO)
-    TRACELOG(LOG_INFO, "    > raudio:.... loaded (optional)");
-#else
-    TRACELOG(LOG_INFO, "    > raudio:.... not loaded (optional)");
-#endif
-
-    // Initialize window data
-    CORE.Window.screen.width = width;
-    CORE.Window.screen.height = height;
-    CORE.Window.eventWaiting = false;
-    CORE.Window.screenScale = MatrixIdentity();     // No draw scaling required by default
-    if ((title != NULL) && (title[0] != 0)) CORE.Window.title = title;
-
-    // Initialize global input state
-    memset(&CORE.Input, 0, sizeof(CORE.Input));     // Reset CORE.Input structure to 0
-    CORE.Input.Keyboard.exitKey = KEY_ESCAPE;
-    CORE.Input.Mouse.scale = (Vector2){ 1.0f, 1.0f };
-    CORE.Input.Mouse.cursor = MOUSE_CURSOR_ARROW;
-    CORE.Input.Gamepad.lastButtonPressed = GAMEPAD_BUTTON_UNKNOWN;
-
-    // Initialize platform
-    //--------------------------------------------------------------
-    InitPlatform();
-    //--------------------------------------------------------------
-}
-
-// Close window and unload OpenGL context
-void CloseWindow(void)
-{
-#if defined(SUPPORT_GIF_RECORDING)
-    if (gifRecording)
-    {
-        MsfGifResult result = msf_gif_end(&gifState);
-        msf_gif_free(result);
-        gifRecording = false;
-    }
-#endif
-
-#if defined(SUPPORT_MODULE_RTEXT) && defined(SUPPORT_DEFAULT_FONT)
-    UnloadFontDefault();        // WARNING: Module required: rtext
-#endif
-
-    rlglClose();                // De-init rlgl
-
-#if defined(_WIN32) && defined(SUPPORT_WINMM_HIGHRES_TIMER) && !defined(SUPPORT_BUSY_WAIT_LOOP)
-    timeEndPeriod(1);           // Restore time period
-#endif
-
-    // De-initialize platform
-    //--------------------------------------------------------------
-    ClosePlatform();
-    //--------------------------------------------------------------
-
-#if defined(SUPPORT_EVENTS_AUTOMATION)
-    RL_FREE(events);
-#endif
-
-    CORE.Window.ready = false;
-    TRACELOG(LOG_INFO, "Window closed successfully");
-}
 
 // Check if application should close
 bool WindowShouldClose(void)
@@ -606,8 +516,10 @@ void PollInputEvents(void)
 //----------------------------------------------------------------------------------
 
 // Initialize platform: graphics, inputs and more
-static int InitPlatform(void)
+int InitPlatform(void)
 {
+    // Initialize display basic configuration
+    //----------------------------------------------------------------------------
     CORE.Window.currentFbo.width = CORE.Window.screen.width;
     CORE.Window.currentFbo.height = CORE.Window.screen.height;
 
@@ -636,26 +548,32 @@ static int InitPlatform(void)
     //AConfiguration_getScreenSize(platform.app->config);
     //AConfiguration_getScreenLong(platform.app->config);
 
-    // Initialize App command system
-    // NOTE: On APP_CMD_INIT_WINDOW -> InitGraphicsDevice(), InitTimer(), LoadFontDefault()...
-    platform.app->onAppCmd = AndroidCommandCallback;
-
-    // Initialize input events system
-    platform.app->onInputEvent = AndroidInputCallback;
-
-    // Initialize assets manager
-    InitAssetManager(platform.app->activity->assetManager, platform.app->activity->internalDataPath);
-
-    // Initialize base path for storage
-    CORE.Storage.basePath = platform.app->activity->internalDataPath;
-
     // Set some default window flags
     CORE.Window.flags &= ~FLAG_WINDOW_HIDDEN;       // false
     CORE.Window.flags &= ~FLAG_WINDOW_MINIMIZED;    // false
     CORE.Window.flags |= FLAG_WINDOW_MAXIMIZED;     // true
     CORE.Window.flags &= ~FLAG_WINDOW_UNFOCUSED;    // false
+    //----------------------------------------------------------------------------
 
-    TRACELOG(LOG_INFO, "PLATFORM: ANDROID: Application initialized successfully");
+    // Initialize App command system
+    // NOTE: On APP_CMD_INIT_WINDOW -> InitGraphicsDevice(), InitTimer(), LoadFontDefault()...
+    //----------------------------------------------------------------------------
+    platform.app->onAppCmd = AndroidCommandCallback;
+    //----------------------------------------------------------------------------
+
+    // Initialize input events system
+    //----------------------------------------------------------------------------
+    platform.app->onInputEvent = AndroidInputCallback;
+    //----------------------------------------------------------------------------
+
+    // Initialize storage system
+    //----------------------------------------------------------------------------
+    InitAssetManager(platform.app->activity->assetManager, platform.app->activity->internalDataPath);   // Initialize assets manager
+
+    CORE.Storage.basePath = platform.app->activity->internalDataPath;   // Define base path for storage
+    //----------------------------------------------------------------------------
+
+    TRACELOG(LOG_INFO, "PLATFORM: ANDROID: Initialized successfully");
 
     // Android ALooper_pollAll() variables
     int pollResult = 0;
@@ -679,7 +597,7 @@ static int InitPlatform(void)
 }
 
 // Close platform
-static void ClosePlatform(void)
+void ClosePlatform(void)
 {
     // Close surface, context and display
     if (platform.device != EGL_NO_DISPLAY)

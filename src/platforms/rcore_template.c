@@ -21,8 +21,8 @@
 *           Custom flag for rcore on target platform -not used-
 *
 *   DEPENDENCIES:
-*       - Dependency 01
-*       - Dependency 02
+*       - <platform-specific SDK dependency>
+*       - gestures: Gestures system for touch-ready devices (or simulated from mouse inputs)
 *
 *
 *   LICENSE: zlib/libpng
@@ -71,8 +71,8 @@ static PlatformData platform = { 0 };   // Platform specific data
 //----------------------------------------------------------------------------------
 // Module Internal Functions Declaration
 //----------------------------------------------------------------------------------
-static int InitPlatform(void);          // Initialize platform (graphics, inputs and more)
-static bool InitGraphicsDevice(void);   // Initialize graphics device
+int InitPlatform(void);          // Initialize platform (graphics, inputs and more)
+bool InitGraphicsDevice(void);   // Initialize graphics device
 
 //----------------------------------------------------------------------------------
 // Module Functions Declaration
@@ -82,153 +82,6 @@ static bool InitGraphicsDevice(void);   // Initialize graphics device
 //----------------------------------------------------------------------------------
 // Module Functions Definition: Window and Graphics Device
 //----------------------------------------------------------------------------------
-
-// Initialize window and OpenGL context
-// NOTE: data parameter could be used to pass any kind of required data to the initialization
-void InitWindow(int width, int height, const char *title)
-{
-    TRACELOG(LOG_INFO, "Initializing raylib %s", RAYLIB_VERSION);
-
-    TRACELOG(LOG_INFO, "Supported raylib modules:");
-    TRACELOG(LOG_INFO, "    > rcore:..... loaded (mandatory)");
-    TRACELOG(LOG_INFO, "    > rlgl:...... loaded (mandatory)");
-#if defined(SUPPORT_MODULE_RSHAPES)
-    TRACELOG(LOG_INFO, "    > rshapes:... loaded (optional)");
-#else
-    TRACELOG(LOG_INFO, "    > rshapes:... not loaded (optional)");
-#endif
-#if defined(SUPPORT_MODULE_RTEXTURES)
-    TRACELOG(LOG_INFO, "    > rtextures:. loaded (optional)");
-#else
-    TRACELOG(LOG_INFO, "    > rtextures:. not loaded (optional)");
-#endif
-#if defined(SUPPORT_MODULE_RTEXT)
-    TRACELOG(LOG_INFO, "    > rtext:..... loaded (optional)");
-#else
-    TRACELOG(LOG_INFO, "    > rtext:..... not loaded (optional)");
-#endif
-#if defined(SUPPORT_MODULE_RMODELS)
-    TRACELOG(LOG_INFO, "    > rmodels:... loaded (optional)");
-#else
-    TRACELOG(LOG_INFO, "    > rmodels:... not loaded (optional)");
-#endif
-#if defined(SUPPORT_MODULE_RAUDIO)
-    TRACELOG(LOG_INFO, "    > raudio:.... loaded (optional)");
-#else
-    TRACELOG(LOG_INFO, "    > raudio:.... not loaded (optional)");
-#endif
-
-    // NOTE: Keep internal pointer to input title string (no copy)
-    if ((title != NULL) && (title[0] != 0)) CORE.Window.title = title;
-
-    // Initialize global input state
-    memset(&CORE.Input, 0, sizeof(CORE.Input));
-    CORE.Input.Keyboard.exitKey = KEY_ESCAPE;
-    CORE.Input.Mouse.scale = (Vector2){ 1.0f, 1.0f };
-    CORE.Input.Mouse.cursor = MOUSE_CURSOR_ARROW;
-    CORE.Input.Gamepad.lastButtonPressed = 0;       // GAMEPAD_BUTTON_UNKNOWN
-    CORE.Window.eventWaiting = false;
-
-
-    // TODO: Platform specific init window
-    //--------------------------------------------------------------
-    CORE.Window.screen.width = width;
-    CORE.Window.screen.height = height;
-    CORE.Window.currentFbo.width = width;
-    CORE.Window.currentFbo.height = height;
-
-    // Initialize graphics device
-    // NOTE: returns true if window and graphic device has been initialized successfully
-    CORE.Window.ready = InitGraphicsDevice(width, height);
-
-
-
-    // Initialize OpenGL context (states and resources)
-    // NOTE: CORE.Window.currentFbo.width and CORE.Window.currentFbo.height not used, just stored as globals in rlgl
-    rlglInit(CORE.Window.currentFbo.width, CORE.Window.currentFbo.height);
-
-    // Setup default viewport
-    // NOTE: It updated CORE.Window.render.width and CORE.Window.render.height
-    SetupViewport(CORE.Window.currentFbo.width, CORE.Window.currentFbo.height);
-
-#if defined(SUPPORT_MODULE_RTEXT) && defined(SUPPORT_DEFAULT_FONT)
-    // Load default font
-    // WARNING: External function: Module required: rtext
-    LoadFontDefault();
-    #if defined(SUPPORT_MODULE_RSHAPES)
-    // Set font white rectangle for shapes drawing, so shapes and text can be batched together
-    // WARNING: rshapes module is required, if not available, default internal white rectangle is used
-    Rectangle rec = GetFontDefault().recs[95];
-    if (CORE.Window.flags & FLAG_MSAA_4X_HINT)
-    {
-        // NOTE: We try to maxime rec padding to avoid pixel bleeding on MSAA filtering
-        SetShapesTexture(GetFontDefault().texture, (Rectangle){ rec.x + 2, rec.y + 2, 1, 1 });
-    }
-    else
-    {
-        // NOTE: We set up a 1px padding on char rectangle to avoid pixel bleeding
-        SetShapesTexture(GetFontDefault().texture, (Rectangle){ rec.x + 1, rec.y + 1, rec.width - 2, rec.height - 2 });
-    }
-    #endif
-#else
-    #if defined(SUPPORT_MODULE_RSHAPES)
-    // Set default texture and rectangle to be used for shapes drawing
-    // NOTE: rlgl default texture is a 1x1 pixel UNCOMPRESSED_R8G8B8A8
-    Texture2D texture = { rlGetTextureIdDefault(), 1, 1, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 };
-    SetShapesTexture(texture, (Rectangle){ 0.0f, 0.0f, 1.0f, 1.0f });    // WARNING: Module required: rshapes
-    #endif
-#endif
-#if defined(SUPPORT_MODULE_RTEXT) && defined(SUPPORT_DEFAULT_FONT)
-    if ((CORE.Window.flags & FLAG_WINDOW_HIGHDPI) > 0)
-    {
-        // Set default font texture filter for HighDPI (blurry)
-        // RL_TEXTURE_FILTER_LINEAR - tex filter: BILINEAR, no mipmaps
-        rlTextureParameters(GetFontDefault().texture.id, RL_TEXTURE_MIN_FILTER, RL_TEXTURE_FILTER_LINEAR);
-        rlTextureParameters(GetFontDefault().texture.id, RL_TEXTURE_MAG_FILTER, RL_TEXTURE_FILTER_LINEAR);
-    }
-#endif
-
-#if defined(SUPPORT_EVENTS_AUTOMATION)
-    events = (AutomationEvent *)RL_CALLOC(MAX_CODE_AUTOMATION_EVENTS, sizeof(AutomationEvent));
-    CORE.Time.frameCounter = 0;
-#endif
-
-    // Initialize random seed
-    SetRandomSeed((unsigned int)time(NULL));
-
-    TRACELOG(LOG_INFO, "PLATFORM: CUSTOM: Application initialized successfully");
-}
-
-// Close window and unload OpenGL context
-void CloseWindow(void)
-{
-#if defined(SUPPORT_GIF_RECORDING)
-    if (gifRecording)
-    {
-        MsfGifResult result = msf_gif_end(&gifState);
-        msf_gif_free(result);
-        gifRecording = false;
-    }
-#endif
-
-#if defined(SUPPORT_MODULE_RTEXT) && defined(SUPPORT_DEFAULT_FONT)
-    UnloadFontDefault();        // WARNING: Module required: rtext
-#endif
-
-    rlglClose();                // De-init rlgl
-
-    // Platform specific close window
-    //--------------------------------------------------------------
-    // TODO.
-    //--------------------------------------------------------------
-
-#if defined(SUPPORT_EVENTS_AUTOMATION)
-    RL_FREE(events);
-#endif
-
-    CORE.Window.ready = false;
-    TRACELOG(LOG_INFO, "Window closed successfully");
-}
 
 // Check if application should close
 bool WindowShouldClose(void)
@@ -503,27 +356,7 @@ void OpenURL(const char *url)
     if (strchr(url, '\'') != NULL) TRACELOG(LOG_WARNING, "SYSTEM: Provided URL could be potentially malicious, avoid [\'] character");
     else
     {
-        JNIEnv *env = NULL;
-        JavaVM *vm = platform.app->activity->vm;
-        (*vm)->AttachCurrentThread(vm, &env, NULL);
-
-        jstring urlString = (*env)->NewStringUTF(env, url);
-        jclass uriClass = (*env)->FindClass(env, "android/net/Uri");
-        jmethodID uriParse = (*env)->GetStaticMethodID(env, uriClass, "parse", "(Ljava/lang/String;)Landroid/net/Uri;");
-        jobject uri = (*env)->CallStaticObjectMethod(env, uriClass, uriParse, urlString);
-
-        jclass intentClass = (*env)->FindClass(env, "android/content/Intent");
-        jfieldID actionViewId = (*env)->GetStaticFieldID(env, intentClass, "ACTION_VIEW", "Ljava/lang/String;");
-        jobject actionView = (*env)->GetStaticObjectField(env, intentClass, actionViewId);
-        jmethodID newIntent = (*env)->GetMethodID(env, intentClass, "<init>", "(Ljava/lang/String;Landroid/net/Uri;)V");
-        jobject intent = (*env)->AllocObject(env, intentClass);
-
-        (*env)->CallVoidMethod(env, intent, newIntent, actionView, uri);
-        jclass activityClass = (*env)->FindClass(env, "android/app/Activity");
-        jmethodID startActivity = (*env)->GetMethodID(env, activityClass, "startActivity", "(Landroid/content/Intent;)V");
-        (*env)->CallVoidMethod(env, platform.app->activity->clazz, startActivity, intent);
-
-        (*vm)->DetachCurrentThread(vm);
+        // TODO:
     }
 }
 
@@ -596,8 +429,14 @@ void PollInputEvents(void)
 //----------------------------------------------------------------------------------
 
 // Initialize platform: graphics, inputs and more
-static int InitPlatform(void)
+int InitPlatform(void)
 {
+    // TODO: Initialize graphic device: display/window
+    // It usually requires setting up the platform display system configuration
+    // and connexion with the GPU through some system graphic API
+    // raylib uses OpenGL so, platform should create that kind of connection
+    // Below example illustrates that process using EGL library
+    //----------------------------------------------------------------------------
     CORE.Window.fullscreen = true;
     CORE.Window.flags |= FLAG_FULLSCREEN_MODE;
 
@@ -663,35 +502,27 @@ static int InitPlatform(void)
     }
 
     // Create an EGL window surface
-    //---------------------------------------------------------------------------------
     EGLint displayFormat = 0;
 
     // EGL_NATIVE_VISUAL_ID is an attribute of the EGLConfig that is guaranteed to be accepted by ANativeWindow_setBuffersGeometry()
     // As soon as we picked a EGLConfig, we can safely reconfigure the ANativeWindow buffers to match, using EGL_NATIVE_VISUAL_ID
     eglGetConfigAttrib(platform.device, platform.config, EGL_NATIVE_VISUAL_ID, &displayFormat);
 
-    // At this point we need to manage render size vs screen size
-    // NOTE: This function use and modify global module variables:
-    //  -> CORE.Window.screen.width/CORE.Window.screen.height
-    //  -> CORE.Window.render.width/CORE.Window.render.height
-    //  -> CORE.Window.screenScale
-    SetupFramebuffer(CORE.Window.display.width, CORE.Window.display.height);
-
-    ANativeWindow_setBuffersGeometry(platform.app->window, CORE.Window.render.width, CORE.Window.render.height, displayFormat);
-    //ANativeWindow_setBuffersGeometry(platform.app->window, 0, 0, displayFormat);       // Force use of native display size
+    // Android specific call
+    ANativeWindow_setBuffersGeometry(platform.app->window, 0, 0, displayFormat);       // Force use of native display size
 
     platform.surface = eglCreateWindowSurface(platform.device, platform.config, platform.app->window, NULL);
 
     // There must be at least one frame displayed before the buffers are swapped
-    //eglSwapInterval(platform.device, 1);
+    eglSwapInterval(platform.device, 1);
 
-    if (eglMakeCurrent(platform.device, platform.surface, platform.surface, platform.context) == EGL_FALSE)
+    EGLBoolean result = eglMakeCurrent(platform.device, platform.surface, platform.surface, platform.context);
+
+    // Check surface and context activation
+    if (result != EGL_FALSE)
     {
-        TRACELOG(LOG_WARNING, "DISPLAY: Failed to attach EGL rendering context to EGL surface");
-        return -1;
-    }
-    else
-    {
+        CORE.Window.ready = true;
+
         CORE.Window.render.width = CORE.Window.screen.width;
         CORE.Window.render.height = CORE.Window.screen.height;
         CORE.Window.currentFbo.width = CORE.Window.render.width;
@@ -703,27 +534,56 @@ static int InitPlatform(void)
         TRACELOG(LOG_INFO, "    > Render size:  %i x %i", CORE.Window.render.width, CORE.Window.render.height);
         TRACELOG(LOG_INFO, "    > Viewport offsets: %i, %i", CORE.Window.renderOffset.x, CORE.Window.renderOffset.y);
     }
+    else
+    {
+        TRACELOG(LOG_FATAL, "PLATFORM: Failed to initialize graphics device");
+        return -1;
+    }
+    //----------------------------------------------------------------------------
 
-    // Load OpenGL extensions
+    // If everything work as expected, we can continue
+    CORE.Window.render.width = CORE.Window.screen.width;
+    CORE.Window.render.height = CORE.Window.screen.height;
+    CORE.Window.currentFbo.width = CORE.Window.render.width;
+    CORE.Window.currentFbo.height = CORE.Window.render.height;
+
+    TRACELOG(LOG_INFO, "DISPLAY: Device initialized successfully");
+    TRACELOG(LOG_INFO, "    > Display size: %i x %i", CORE.Window.display.width, CORE.Window.display.height);
+    TRACELOG(LOG_INFO, "    > Screen size:  %i x %i", CORE.Window.screen.width, CORE.Window.screen.height);
+    TRACELOG(LOG_INFO, "    > Render size:  %i x %i", CORE.Window.render.width, CORE.Window.render.height);
+    TRACELOG(LOG_INFO, "    > Viewport offsets: %i, %i", CORE.Window.renderOffset.x, CORE.Window.renderOffset.y);
+
+    // TODO: Load OpenGL extensions
     // NOTE: GL procedures address loader is required to load extensions
+    //----------------------------------------------------------------------------
     rlLoadExtensions(eglGetProcAddress);
+    //----------------------------------------------------------------------------
 
-    CORE.Window.ready = true;
+    // TODO: Initialize input events system
+    // It could imply keyboard, mouse, gamepad, touch...
+    // Depending on the platform libraries/SDK it could use a callbacks mechanims
+    // For system events and inputs evens polling on a per-frame basis, use PollInputEvents()
+    //----------------------------------------------------------------------------
+    // ...
+    //----------------------------------------------------------------------------
 
-    // If graphic device is no properly initialized, we end program
-    if (!CORE.Window.ready) { TRACELOG(LOG_FATAL, "PLATFORM: Failed to initialize graphic device"); return -1; }
-
-    // Initialize hi-res timer
+    // TODO: Initialize timming system
+    //----------------------------------------------------------------------------
     InitTimer();
+    //----------------------------------------------------------------------------
 
-    // Initialize base path for storage
+    // TODO: Initialize storage system
+    //----------------------------------------------------------------------------
     CORE.Storage.basePath = GetWorkingDirectory();
+    //----------------------------------------------------------------------------
+
+    TRACELOG(LOG_INFO, "PLATFORM: CUSTOM: Initialized successfully");
 
     return 0;
 }
 
 // Close platform
-static void ClosePlatform(void)
+void ClosePlatform(void)
 {
     // TODO: De-initialize graphics, inputs and more
 }

@@ -6,7 +6,7 @@
 *       - Windows (Win32, Win64)
 *       - Linux (X11/Wayland desktop mode)
 *       - FreeBSD, OpenBSD, NetBSD, DragonFly (X11 desktop)
-*       - OSX/macOS
+*       - OSX/macOS (x64, arm64)
 *
 *   LIMITATIONS:
 *       - Limitation 01
@@ -24,8 +24,8 @@
 *           Custom flag for rcore on target platform -not used-
 *
 *   DEPENDENCIES:
-*       rglfw    - Manage graphic device, OpenGL context and inputs (Windows, Linux, OSX, FreeBSD...)
-*       gestures - Gestures system for touch-ready devices (or simulated from mouse inputs)
+*       - rglfw: Manage graphic device, OpenGL context and inputs (Windows, Linux, OSX, FreeBSD...)
+*       - gestures: Gestures system for touch-ready devices (or simulated from mouse inputs)
 *
 *
 *   LICENSE: zlib/libpng
@@ -111,8 +111,8 @@ static PlatformData platform = { 0 };   // Platform specific data
 //----------------------------------------------------------------------------------
 // Module Internal Functions Declaration
 //----------------------------------------------------------------------------------
-static int InitPlatform(void);          // Initialize platform (graphics, inputs and more)
-static void ClosePlatform(void);        // Close platform
+int InitPlatform(void);          // Initialize platform (graphics, inputs and more)
+void ClosePlatform(void);        // Close platform
 
 // Error callback event
 static void ErrorCallback(int error, const char *description);                             // GLFW3 Error Callback, runs on GLFW3 error
@@ -142,162 +142,11 @@ static void JoystickCallback(int jid, int event);                               
 // Module Functions Definition: Window and Graphics Device
 //----------------------------------------------------------------------------------
 
-// Initialize window and OpenGL context
-// NOTE: data parameter could be used to pass any kind of required data to the initialization
-void InitWindow(int width, int height, const char *title)
-{
-    TRACELOG(LOG_INFO, "Initializing raylib %s", RAYLIB_VERSION);
-
-    TRACELOG(LOG_INFO, "Supported raylib modules:");
-    TRACELOG(LOG_INFO, "    > rcore:..... loaded (mandatory)");
-    TRACELOG(LOG_INFO, "    > rlgl:...... loaded (mandatory)");
-#if defined(SUPPORT_MODULE_RSHAPES)
-    TRACELOG(LOG_INFO, "    > rshapes:... loaded (optional)");
-#else
-    TRACELOG(LOG_INFO, "    > rshapes:... not loaded (optional)");
-#endif
-#if defined(SUPPORT_MODULE_RTEXTURES)
-    TRACELOG(LOG_INFO, "    > rtextures:. loaded (optional)");
-#else
-    TRACELOG(LOG_INFO, "    > rtextures:. not loaded (optional)");
-#endif
-#if defined(SUPPORT_MODULE_RTEXT)
-    TRACELOG(LOG_INFO, "    > rtext:..... loaded (optional)");
-#else
-    TRACELOG(LOG_INFO, "    > rtext:..... not loaded (optional)");
-#endif
-#if defined(SUPPORT_MODULE_RMODELS)
-    TRACELOG(LOG_INFO, "    > rmodels:... loaded (optional)");
-#else
-    TRACELOG(LOG_INFO, "    > rmodels:... not loaded (optional)");
-#endif
-#if defined(SUPPORT_MODULE_RAUDIO)
-    TRACELOG(LOG_INFO, "    > raudio:.... loaded (optional)");
-#else
-    TRACELOG(LOG_INFO, "    > raudio:.... not loaded (optional)");
-#endif
-
-    // Initialize window data
-    CORE.Window.screen.width = width;
-    CORE.Window.screen.height = height;
-    CORE.Window.eventWaiting = false;
-    CORE.Window.screenScale = MatrixIdentity();     // No draw scaling required by default
-    if ((title != NULL) && (title[0] != 0)) CORE.Window.title = title;
-
-    // Initialize global input state
-    memset(&CORE.Input, 0, sizeof(CORE.Input));     // Reset CORE.Input structure to 0
-    CORE.Input.Keyboard.exitKey = KEY_ESCAPE;
-    CORE.Input.Mouse.scale = (Vector2){ 1.0f, 1.0f };
-    CORE.Input.Mouse.cursor = MOUSE_CURSOR_ARROW;
-    CORE.Input.Gamepad.lastButtonPressed = GAMEPAD_BUTTON_UNKNOWN;
-    
-    // Initialize platform
-    //--------------------------------------------------------------   
-    InitPlatform();
-    //--------------------------------------------------------------
-    
-    // Initialize rlgl default data (buffers and shaders)
-    // NOTE: CORE.Window.currentFbo.width and CORE.Window.currentFbo.height not used, just stored as globals in rlgl
-    rlglInit(CORE.Window.currentFbo.width, CORE.Window.currentFbo.height);
-
-    // Setup default viewport
-    SetupViewport(CORE.Window.currentFbo.width, CORE.Window.currentFbo.height);
-
-#if defined(SUPPORT_MODULE_RTEXT) && defined(SUPPORT_DEFAULT_FONT)
-    // Load default font
-    // WARNING: External function: Module required: rtext
-    LoadFontDefault();
-    #if defined(SUPPORT_MODULE_RSHAPES)
-    // Set font white rectangle for shapes drawing, so shapes and text can be batched together
-    // WARNING: rshapes module is required, if not available, default internal white rectangle is used
-    Rectangle rec = GetFontDefault().recs[95];
-    if (CORE.Window.flags & FLAG_MSAA_4X_HINT)
-    {
-        // NOTE: We try to maxime rec padding to avoid pixel bleeding on MSAA filtering
-        SetShapesTexture(GetFontDefault().texture, (Rectangle){ rec.x + 2, rec.y + 2, 1, 1 });
-    }
-    else
-    {
-        // NOTE: We set up a 1px padding on char rectangle to avoid pixel bleeding
-        SetShapesTexture(GetFontDefault().texture, (Rectangle){ rec.x + 1, rec.y + 1, rec.width - 2, rec.height - 2 });
-    }
-    #endif
-#else
-    #if defined(SUPPORT_MODULE_RSHAPES)
-    // Set default texture and rectangle to be used for shapes drawing
-    // NOTE: rlgl default texture is a 1x1 pixel UNCOMPRESSED_R8G8B8A8
-    Texture2D texture = { rlGetTextureIdDefault(), 1, 1, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 };
-    SetShapesTexture(texture, (Rectangle){ 0.0f, 0.0f, 1.0f, 1.0f });    // WARNING: Module required: rshapes
-    #endif
-#endif
-#if defined(SUPPORT_MODULE_RTEXT) && defined(SUPPORT_DEFAULT_FONT)
-    if ((CORE.Window.flags & FLAG_WINDOW_HIGHDPI) > 0)
-    {
-        // Set default font texture filter for HighDPI (blurry)
-        // RL_TEXTURE_FILTER_LINEAR - tex filter: BILINEAR, no mipmaps
-        rlTextureParameters(GetFontDefault().texture.id, RL_TEXTURE_MIN_FILTER, RL_TEXTURE_FILTER_LINEAR);
-        rlTextureParameters(GetFontDefault().texture.id, RL_TEXTURE_MAG_FILTER, RL_TEXTURE_FILTER_LINEAR);
-    }
-#endif
-
-#if defined(SUPPORT_EVENTS_AUTOMATION)
-    events = (AutomationEvent *)RL_CALLOC(MAX_CODE_AUTOMATION_EVENTS, sizeof(AutomationEvent));
-    CORE.Time.frameCounter = 0;
-#endif
-
-    // Initialize random seed
-    SetRandomSeed((unsigned int)time(NULL));
-
-    TRACELOG(LOG_INFO, "PLATFORM: DESKTOP: Application initialized successfully");
-}
-
-// Close window and unload OpenGL context
-void CloseWindow(void)
-{
-#if defined(SUPPORT_GIF_RECORDING)
-    if (gifRecording)
-    {
-        MsfGifResult result = msf_gif_end(&gifState);
-        msf_gif_free(result);
-        gifRecording = false;
-    }
-#endif
-
-#if defined(SUPPORT_MODULE_RTEXT) && defined(SUPPORT_DEFAULT_FONT)
-    UnloadFontDefault();        // WARNING: Module required: rtext
-#endif
-
-    rlglClose();                // De-init rlgl
-
-    // De-initialize platform
-    //--------------------------------------------------------------   
-    ClosePlatform();
-    //--------------------------------------------------------------
-
-#if defined(SUPPORT_EVENTS_AUTOMATION)
-    RL_FREE(events);
-#endif
-
-    CORE.Window.ready = false;
-    TRACELOG(LOG_INFO, "Window closed successfully");
-}
-
 // Check if application should close
 // NOTE: By default, if KEY_ESCAPE pressed or window close icon clicked
 bool WindowShouldClose(void)
 {
-    if (CORE.Window.ready)
-    {
-        // While window minimized, stop loop execution
-        while (IsWindowState(FLAG_WINDOW_MINIMIZED) && !IsWindowState(FLAG_WINDOW_ALWAYS_RUN)) glfwWaitEvents();
-
-        CORE.Window.shouldClose = glfwWindowShouldClose(platform.handle);
-
-        // Reset close status for next frame
-        glfwSetWindowShouldClose(platform.handle, GLFW_FALSE);
-
-        return CORE.Window.shouldClose;
-    }
+    if (CORE.Window.ready) return CORE.Window.shouldClose;
     else return true;
 }
 
@@ -800,12 +649,12 @@ void SetWindowMinSize(int width, int height)
 {
     CORE.Window.screenMin.width = width;
     CORE.Window.screenMin.height = height;
-    
+
     int minWidth  = (CORE.Window.screenMin.width  == 0)? GLFW_DONT_CARE : (int)CORE.Window.screenMin.width;
     int minHeight = (CORE.Window.screenMin.height == 0)? GLFW_DONT_CARE : (int)CORE.Window.screenMin.height;
     int maxWidth  = (CORE.Window.screenMax.width  == 0)? GLFW_DONT_CARE : (int)CORE.Window.screenMax.width;
     int maxHeight = (CORE.Window.screenMax.height == 0)? GLFW_DONT_CARE : (int)CORE.Window.screenMax.height;
-    
+
     glfwSetWindowSizeLimits(platform.handle, minWidth, minHeight, maxWidth, maxHeight);
 }
 
@@ -814,12 +663,12 @@ void SetWindowMaxSize(int width, int height)
 {
     CORE.Window.screenMax.width = width;
     CORE.Window.screenMax.height = height;
-    
+
     int minWidth  = (CORE.Window.screenMin.width  == 0)? GLFW_DONT_CARE : (int)CORE.Window.screenMin.width;
     int minHeight = (CORE.Window.screenMin.height == 0)? GLFW_DONT_CARE : (int)CORE.Window.screenMin.height;
     int maxWidth  = (CORE.Window.screenMax.width  == 0)? GLFW_DONT_CARE : (int)CORE.Window.screenMax.width;
     int maxHeight = (CORE.Window.screenMax.height == 0)? GLFW_DONT_CARE : (int)CORE.Window.screenMax.height;
-    
+
     glfwSetWindowSizeLimits(platform.handle, minWidth, minHeight, maxWidth, maxHeight);
 }
 
@@ -902,13 +751,24 @@ int GetCurrentMonitor(void)
         }
         else
         {
-            int x = 0;
-            int y = 0;
+            // In case the window is between two monitors, we use below logic
+            // to try to detect the "current monitor" for that window, note that
+            // this is probably an overengineered solution for a very side case
+            // trying to match SDL behaviour
 
-            glfwGetWindowPos(platform.handle, &x, &y);
+            int closestDist = 0x7FFFFFFF;
+
+            // Window center position
+            int wcx = 0;
+            int wcy = 0;
+
+            glfwGetWindowPos(platform.handle, &wcx, &wcy);
+            wcx += (int)CORE.Window.screen.width/2;
+            wcy += (int)CORE.Window.screen.height/2;
 
             for (int i = 0; i < monitorCount; i++)
             {
+                // Monitor top-left position
                 int mx = 0;
                 int my = 0;
 
@@ -918,16 +778,33 @@ int GetCurrentMonitor(void)
 
                 if (mode)
                 {
-                    const int width = mode->width;
-                    const int height = mode->height;
+                    const int right = mx + mode->width - 1;
+                    const int bottom = my + mode->height - 1;
 
-                    if ((x >= mx) &&
-                        (x < (mx + width)) &&
-                        (y >= my) &&
-                        (y < (my + height)))
+                    if ((wcx >= mx) &&
+                        (wcx <= right) &&
+                        (wcy >= my) &&
+                        (wcy <= bottom))
                     {
                         index = i;
                         break;
+                    }
+
+                    int xclosest = wcx;
+                    if (wcx < mx) xclosest = mx;
+                    else if (wcx > right) xclosest = right;
+
+                    int yclosest = wcy;
+                    if (wcy < my) yclosest = my;
+                    else if (wcy > bottom) yclosest = bottom;
+
+                    int dx = wcx - xclosest;
+                    int dy = wcy - yclosest;
+                    int dist = (dx*dx) + (dy*dy);
+                    if (dist < closestDist)
+                    {
+                        index = i;
+                        closestDist = dist;
                     }
                 }
                 else TRACELOG(LOG_WARNING, "GLFW: Failed to find video mode for selected monitor");
@@ -1229,12 +1106,11 @@ void PollInputEvents(void)
     // Reset keys/chars pressed registered
     CORE.Input.Keyboard.keyPressedQueueCount = 0;
     CORE.Input.Keyboard.charPressedQueueCount = 0;
-    // Reset key repeats
-    for (int i = 0; i < MAX_KEYBOARD_KEYS; i++) CORE.Input.Keyboard.keyRepeatInFrame[i] = 0;
 
     // Reset last gamepad button/axis registered state
     CORE.Input.Gamepad.lastButtonPressed = 0;       // GAMEPAD_BUTTON_UNKNOWN
     //CORE.Input.Gamepad.axisCount = 0;
+
     // Keyboard/Mouse input polling (automatically managed by GLFW3 through callback)
 
     // Register previous keys states
@@ -1259,7 +1135,7 @@ void PollInputEvents(void)
 
     // Reset touch positions
     //for (int i = 0; i < MAX_TOUCH_POINTS; i++) CORE.Input.Touch.position[i] = (Vector2){ 0, 0 };
-    
+
     // Map touch position to mouse position for convenience
     // WARNING: If the target desktop device supports touch screen, this behavious should be reviewed!
     // TODO: GLFW does not support multi-touch input just yet
@@ -1348,7 +1224,15 @@ void PollInputEvents(void)
     CORE.Window.resizedLastFrame = false;
 
     if (CORE.Window.eventWaiting) glfwWaitEvents();     // Wait for in input events before continue (drawing is paused)
-    else glfwPollEvents();      // Poll input events: keyboard/mouse/window events (callbacks)
+    else glfwPollEvents();      // Poll input events: keyboard/mouse/window events (callbacks) -> Update keys state
+
+    // While window minimized, stop loop execution
+    while (IsWindowState(FLAG_WINDOW_MINIMIZED) && !IsWindowState(FLAG_WINDOW_ALWAYS_RUN)) glfwWaitEvents();
+
+    CORE.Window.shouldClose = glfwWindowShouldClose(platform.handle);
+
+    // Reset close status for next frame
+    glfwSetWindowShouldClose(platform.handle, GLFW_FALSE);
 }
 
 
@@ -1357,7 +1241,7 @@ void PollInputEvents(void)
 //----------------------------------------------------------------------------------
 
 // Initialize platform: graphics, inputs and more
-static int InitPlatform(void)
+int InitPlatform(void)
 {
     glfwSetErrorCallback(ErrorCallback);
 /*
@@ -1379,6 +1263,8 @@ static int InitPlatform(void)
     int result = glfwInit();
     if (result == GLFW_FALSE) { TRACELOG(LOG_WARNING, "GLFW: Failed to initialize GLFW"); return -1; }
 
+    // Initialize graphic device: display/window and graphic context
+    //----------------------------------------------------------------------------
     glfwDefaultWindowHints();                       // Set default windows hints
     //glfwWindowHint(GLFW_RED_BITS, 8);             // Framebuffer red color component bits
     //glfwWindowHint(GLFW_GREEN_BITS, 8);           // Framebuffer green color component bits
@@ -1492,7 +1378,7 @@ static int InitPlatform(void)
     // Forcing this initialization here avoids doing it on PollInputEvents() called by EndDrawing() after first frame has been just drawn.
     // The initialization will still happen and possible delays still occur, but before the window is shown, which is a nicer experience.
     // REF: https://github.com/raysan5/raylib/issues/1554
-    if (MAX_GAMEPADS > 0) glfwSetJoystickCallback(NULL);
+    glfwSetJoystickCallback(NULL);
 
     // Find monitor resolution
     GLFWmonitor *monitor = glfwGetPrimaryMonitor();
@@ -1547,6 +1433,7 @@ static int InitPlatform(void)
                 }
             }
         }
+
         TRACELOG(LOG_WARNING, "SYSTEM: Closest fullscreen videomode: %i x %i", CORE.Window.display.width, CORE.Window.display.height);
 
         // NOTE: ISSUE: Closest videomode could not match monitor aspect-ratio, for example,
@@ -1591,6 +1478,74 @@ static int InitPlatform(void)
         return -1;
     }
 
+    glfwMakeContextCurrent(platform.handle);
+    result = glfwGetError(NULL);
+
+    // Check context activation
+    if ((result != GLFW_NO_WINDOW_CONTEXT) && (result != GLFW_PLATFORM_ERROR))
+    {
+        CORE.Window.ready = true;
+
+        glfwSwapInterval(0);        // No V-Sync by default
+
+        // Try to enable GPU V-Sync, so frames are limited to screen refresh rate (60Hz -> 60 FPS)
+        // NOTE: V-Sync can be enabled by graphic driver configuration, it doesn't need
+        // to be activated on web platforms since VSync is enforced there.
+        if (CORE.Window.flags & FLAG_VSYNC_HINT)
+        {
+            // WARNING: It seems to hit a critical render path in Intel HD Graphics
+            glfwSwapInterval(1);
+            TRACELOG(LOG_INFO, "DISPLAY: Trying to enable VSYNC");
+        }
+
+        int fbWidth = CORE.Window.screen.width;
+        int fbHeight = CORE.Window.screen.height;
+
+        if ((CORE.Window.flags & FLAG_WINDOW_HIGHDPI) > 0)
+        {
+            // NOTE: On APPLE platforms system should manage window/input scaling and also framebuffer scaling.
+            // Framebuffer scaling should be activated with: glfwWindowHint(GLFW_COCOA_RETINA_FRAMEBUFFER, GLFW_TRUE);
+    #if !defined(__APPLE__)
+            glfwGetFramebufferSize(platform.handle, &fbWidth, &fbHeight);
+
+            // Screen scaling matrix is required in case desired screen area is different from display area
+            CORE.Window.screenScale = MatrixScale((float)fbWidth/CORE.Window.screen.width, (float)fbHeight/CORE.Window.screen.height, 1.0f);
+
+            // Mouse input scaling for the new screen size
+            SetMouseScale((float)CORE.Window.screen.width/fbWidth, (float)CORE.Window.screen.height/fbHeight);
+    #endif
+        }
+
+        CORE.Window.render.width = fbWidth;
+        CORE.Window.render.height = fbHeight;
+        CORE.Window.currentFbo.width = fbWidth;
+        CORE.Window.currentFbo.height = fbHeight;
+
+        TRACELOG(LOG_INFO, "DISPLAY: Device initialized successfully");
+        TRACELOG(LOG_INFO, "    > Display size: %i x %i", CORE.Window.display.width, CORE.Window.display.height);
+        TRACELOG(LOG_INFO, "    > Screen size:  %i x %i", CORE.Window.screen.width, CORE.Window.screen.height);
+        TRACELOG(LOG_INFO, "    > Render size:  %i x %i", CORE.Window.render.width, CORE.Window.render.height);
+        TRACELOG(LOG_INFO, "    > Viewport offsets: %i, %i", CORE.Window.renderOffset.x, CORE.Window.renderOffset.y);
+    }
+    else
+    {
+        TRACELOG(LOG_FATAL, "PLATFORM: Failed to initialize graphics device");
+        return -1;
+    }
+
+    if ((CORE.Window.flags & FLAG_WINDOW_MINIMIZED) > 0) MinimizeWindow();
+
+    // If graphic device is no properly initialized, we end program
+    if (!CORE.Window.ready) { TRACELOG(LOG_FATAL, "PLATFORM: Failed to initialize graphic device"); return -1; }
+    else SetWindowPosition(GetMonitorWidth(GetCurrentMonitor())/2 - CORE.Window.screen.width/2, GetMonitorHeight(GetCurrentMonitor())/2 - CORE.Window.screen.height/2);
+
+    // Load OpenGL extensions
+    // NOTE: GL procedures address loader is required to load extensions
+    rlLoadExtensions(glfwGetProcAddress);
+    //----------------------------------------------------------------------------
+
+    // Initialize input events callbacks
+    //----------------------------------------------------------------------------
     // Set window callback events
     glfwSetWindowSizeCallback(platform.handle, WindowSizeCallback);      // NOTE: Resizing not allowed by default!
     glfwSetWindowMaximizeCallback(platform.handle, WindowMaximizeCallback);
@@ -1607,74 +1562,32 @@ static int InitPlatform(void)
     glfwSetCursorEnterCallback(platform.handle, CursorEnterCallback);
     glfwSetJoystickCallback(JoystickCallback);
 
-    glfwMakeContextCurrent(platform.handle);
-
     glfwSetInputMode(platform.handle, GLFW_LOCK_KEY_MODS, GLFW_TRUE);    // Enable lock keys modifiers (CAPS, NUM)
 
-    glfwSwapInterval(0);        // No V-Sync by default
-
-    // Try to enable GPU V-Sync, so frames are limited to screen refresh rate (60Hz -> 60 FPS)
-    // NOTE: V-Sync can be enabled by graphic driver configuration, it doesn't need
-    // to be activated on web platforms since VSync is enforced there.
-    if (CORE.Window.flags & FLAG_VSYNC_HINT)
+    // Retrieve gamepad names
+    for (int i = 0; i < MAX_GAMEPADS; i++)
     {
-        // WARNING: It seems to hit a critical render path in Intel HD Graphics
-        glfwSwapInterval(1);
-        TRACELOG(LOG_INFO, "DISPLAY: Trying to enable VSYNC");
+        if (glfwJoystickPresent(i)) strcpy(CORE.Input.Gamepad.name[i], glfwGetJoystickName(i));
     }
+    //----------------------------------------------------------------------------
 
-    int fbWidth = CORE.Window.screen.width;
-    int fbHeight = CORE.Window.screen.height;
-
-    if ((CORE.Window.flags & FLAG_WINDOW_HIGHDPI) > 0)
-    {
-        // NOTE: On APPLE platforms system should manage window/input scaling and also framebuffer scaling.
-        // Framebuffer scaling should be activated with: glfwWindowHint(GLFW_COCOA_RETINA_FRAMEBUFFER, GLFW_TRUE);
-#if !defined(__APPLE__)
-        glfwGetFramebufferSize(platform.handle, &fbWidth, &fbHeight);
-
-        // Screen scaling matrix is required in case desired screen area is different from display area
-        CORE.Window.screenScale = MatrixScale((float)fbWidth/CORE.Window.screen.width, (float)fbHeight/CORE.Window.screen.height, 1.0f);
-
-        // Mouse input scaling for the new screen size
-        SetMouseScale((float)CORE.Window.screen.width/fbWidth, (float)CORE.Window.screen.height/fbHeight);
-#endif
-    }
-
-    CORE.Window.render.width = fbWidth;
-    CORE.Window.render.height = fbHeight;
-    CORE.Window.currentFbo.width = fbWidth;
-    CORE.Window.currentFbo.height = fbHeight;
-
-    TRACELOG(LOG_INFO, "DISPLAY: Device initialized successfully");
-    TRACELOG(LOG_INFO, "    > Display size: %i x %i", CORE.Window.display.width, CORE.Window.display.height);
-    TRACELOG(LOG_INFO, "    > Screen size:  %i x %i", CORE.Window.screen.width, CORE.Window.screen.height);
-    TRACELOG(LOG_INFO, "    > Render size:  %i x %i", CORE.Window.render.width, CORE.Window.render.height);
-    TRACELOG(LOG_INFO, "    > Viewport offsets: %i, %i", CORE.Window.renderOffset.x, CORE.Window.renderOffset.y);
-
-    // Load OpenGL extensions
-    // NOTE: GL procedures address loader is required to load extensions
-    rlLoadExtensions(glfwGetProcAddress);
-
-    if ((CORE.Window.flags & FLAG_WINDOW_MINIMIZED) > 0) MinimizeWindow();
-
-    CORE.Window.ready = true;   // TODO: Proper validation on windows/context creation
-    
-    // If graphic device is no properly initialized, we end program
-    if (!CORE.Window.ready) { TRACELOG(LOG_FATAL, "PLATFORM: Failed to initialize graphic device"); return -1; }
-    else SetWindowPosition(GetMonitorWidth(GetCurrentMonitor())/2 - CORE.Window.screen.width/2, GetMonitorHeight(GetCurrentMonitor())/2 - CORE.Window.screen.height/2);
-
-    // Initialize hi-res timer
+    // Initialize timming system
+    //----------------------------------------------------------------------------
     InitTimer();
-    
-    // Initialize base path for storage
+    //----------------------------------------------------------------------------
+
+    // Initialize storage system
+    //----------------------------------------------------------------------------
     CORE.Storage.basePath = GetWorkingDirectory();
-    
+    //----------------------------------------------------------------------------
+
+    TRACELOG(LOG_INFO, "PLATFORM: DESKTOP (GLFW): Initialized successfully");
+
     return 0;
 }
 
 // Close platform
-static void ClosePlatform(void)
+void ClosePlatform(void)
 {
     glfwDestroyWindow(platform.handle);
     glfwTerminate();
@@ -1683,7 +1596,6 @@ static void ClosePlatform(void)
     timeEndPeriod(1);           // Restore time period
 #endif
 }
-
 
 // GLFW3 Error Callback, runs on GLFW3 error
 static void ErrorCallback(int error, const char *description)
@@ -1800,61 +1712,6 @@ static void KeyCallback(GLFWwindow *window, int key, int scancode, int action, i
 
     // Check the exit key to set close window
     if ((key == CORE.Input.Keyboard.exitKey) && (action == GLFW_PRESS)) glfwSetWindowShouldClose(platform.handle, GLFW_TRUE);
-
-#if defined(SUPPORT_SCREEN_CAPTURE)
-    if ((key == GLFW_KEY_F12) && (action == GLFW_PRESS))
-    {
-#if defined(SUPPORT_GIF_RECORDING)
-        if (mods & GLFW_MOD_CONTROL)
-        {
-            if (gifRecording)
-            {
-                gifRecording = false;
-
-                MsfGifResult result = msf_gif_end(&gifState);
-
-                SaveFileData(TextFormat("%s/screenrec%03i.gif", CORE.Storage.basePath, screenshotCounter), result.data, (unsigned int)result.dataSize);
-                msf_gif_free(result);
-
-                TRACELOG(LOG_INFO, "SYSTEM: Finish animated GIF recording");
-            }
-            else
-            {
-                gifRecording = true;
-                gifFrameCounter = 0;
-
-                Vector2 scale = GetWindowScaleDPI();
-                msf_gif_begin(&gifState, (int)((float)CORE.Window.render.width*scale.x), (int)((float)CORE.Window.render.height*scale.y));
-                screenshotCounter++;
-
-                TRACELOG(LOG_INFO, "SYSTEM: Start animated GIF recording: %s", TextFormat("screenrec%03i.gif", screenshotCounter));
-            }
-        }
-        else
-#endif  // SUPPORT_GIF_RECORDING
-        {
-            TakeScreenshot(TextFormat("screenshot%03i.png", screenshotCounter));
-            screenshotCounter++;
-        }
-    }
-#endif  // SUPPORT_SCREEN_CAPTURE
-
-#if defined(SUPPORT_EVENTS_AUTOMATION)
-    if ((key == GLFW_KEY_F11) && (action == GLFW_PRESS))
-    {
-        eventsRecording = !eventsRecording;
-
-        // On finish recording, we export events into a file
-        if (!eventsRecording) ExportAutomationEvents("eventsrec.rep");
-    }
-    else if ((key == GLFW_KEY_F9) && (action == GLFW_PRESS))
-    {
-        LoadAutomationEvents("eventsrec.rep");
-        eventsPlaying = true;
-
-        TRACELOG(LOG_WARNING, "eventsPlaying enabled!");
-    }
-#endif
 }
 
 // GLFW3 Char Key Callback, runs on key down (gets equivalent unicode char value)
@@ -1908,7 +1765,6 @@ static void MouseButtonCallback(GLFWwindow *window, int button, int action, int 
 
     // Gesture data is sent to gestures-system for processing
     ProcessGestureEvent(gestureEvent);
-
 #endif
 }
 

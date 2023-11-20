@@ -20,8 +20,8 @@
 *           Custom flag for rcore on target platform -not used-
 *
 *   DEPENDENCIES:
-*       emscripten - Allow interaction between browser API and C
-*       gestures - Gestures system for touch-ready devices (or simulated from mouse inputs)
+*       - emscripten: Allow interaction between browser API and C
+*       - gestures: Gestures system for touch-ready devices (or simulated from mouse inputs)
 *
 *
 *   LICENSE: zlib/libpng
@@ -45,9 +45,9 @@
 *
 **********************************************************************************************/
 
-#define GLFW_INCLUDE_ES2                // GLFW3: Enable OpenGL ES 2.0 (translated to WebGL)
-// #define GLFW_INCLUDE_ES3               // GLFW3: Enable OpenGL ES 3.0 (transalted to WebGL2?)
-#include "GLFW/glfw3.h"                 // GLFW3: Windows, OpenGL context and Input management
+#define GLFW_INCLUDE_NONE       // Disable the standard OpenGL header inclusion on GLFW3
+                                // NOTE: Already provided by rlgl implementation (on glad.h)
+#include "GLFW/glfw3.h"         // GLFW3: Windows, OpenGL context and Input management
 
 #include <emscripten/emscripten.h>      // Emscripten functionality for C
 #include <emscripten/html5.h>           // Emscripten HTML5 library
@@ -85,8 +85,8 @@ static PlatformData platform = { 0 };   // Platform specific data
 //----------------------------------------------------------------------------------
 // Module Internal Functions Declaration
 //----------------------------------------------------------------------------------
-static int InitPlatform(void);          // Initialize platform (graphics, inputs and more)
-static void ClosePlatform(void);        // Close platform
+int InitPlatform(void);          // Initialize platform (graphics, inputs and more)
+void ClosePlatform(void);        // Close platform
 
 // Error callback event
 static void ErrorCallback(int error, const char *description);                      // GLFW3 Error Callback, runs on GLFW3 error
@@ -94,7 +94,7 @@ static void ErrorCallback(int error, const char *description);                  
 // Window callbacks events
 static void WindowSizeCallback(GLFWwindow *window, int width, int height);          // GLFW3 WindowSize Callback, runs when window is resized
 static void WindowIconifyCallback(GLFWwindow *window, int iconified);               // GLFW3 WindowIconify Callback, runs when window is minimized/restored
-static void WindowMaximizeCallback(GLFWwindow *window, int maximized);              // GLFW3 Window Maximize Callback, runs when window is maximized
+//static void WindowMaximizeCallback(GLFWwindow *window, int maximized);              // GLFW3 Window Maximize Callback, runs when window is maximized
 static void WindowFocusCallback(GLFWwindow *window, int focused);                   // GLFW3 WindowFocus Callback, runs when window get/lose focus
 static void WindowDropCallback(GLFWwindow *window, int count, const char **paths);  // GLFW3 Window Drop Callback, runs when drop files into window
 
@@ -124,147 +124,6 @@ static EM_BOOL EmscriptenGamepadCallback(int eventType, const EmscriptenGamepadE
 //----------------------------------------------------------------------------------
 // Module Functions Definition: Window and Graphics Device
 //----------------------------------------------------------------------------------
-
-// Initialize window and OpenGL context
-// NOTE: data parameter could be used to pass any kind of required data to the initialization
-void InitWindow(int width, int height, const char *title)
-{
-    TRACELOG(LOG_INFO, "Initializing raylib %s", RAYLIB_VERSION);
-
-    TRACELOG(LOG_INFO, "Supported raylib modules:");
-    TRACELOG(LOG_INFO, "    > rcore:..... loaded (mandatory)");
-    TRACELOG(LOG_INFO, "    > rlgl:...... loaded (mandatory)");
-#if defined(SUPPORT_MODULE_RSHAPES)
-    TRACELOG(LOG_INFO, "    > rshapes:... loaded (optional)");
-#else
-    TRACELOG(LOG_INFO, "    > rshapes:... not loaded (optional)");
-#endif
-#if defined(SUPPORT_MODULE_RTEXTURES)
-    TRACELOG(LOG_INFO, "    > rtextures:. loaded (optional)");
-#else
-    TRACELOG(LOG_INFO, "    > rtextures:. not loaded (optional)");
-#endif
-#if defined(SUPPORT_MODULE_RTEXT)
-    TRACELOG(LOG_INFO, "    > rtext:..... loaded (optional)");
-#else
-    TRACELOG(LOG_INFO, "    > rtext:..... not loaded (optional)");
-#endif
-#if defined(SUPPORT_MODULE_RMODELS)
-    TRACELOG(LOG_INFO, "    > rmodels:... loaded (optional)");
-#else
-    TRACELOG(LOG_INFO, "    > rmodels:... not loaded (optional)");
-#endif
-#if defined(SUPPORT_MODULE_RAUDIO)
-    TRACELOG(LOG_INFO, "    > raudio:.... loaded (optional)");
-#else
-    TRACELOG(LOG_INFO, "    > raudio:.... not loaded (optional)");
-#endif
-
-    // Initialize window data
-    CORE.Window.screen.width = width;
-    CORE.Window.screen.height = height;
-    CORE.Window.eventWaiting = false;
-    CORE.Window.screenScale = MatrixIdentity();     // No draw scaling required by default
-    if ((title != NULL) && (title[0] != 0)) CORE.Window.title = title;
-
-    // Initialize global input state
-    memset(&CORE.Input, 0, sizeof(CORE.Input));     // Reset CORE.Input structure to 0
-    CORE.Input.Keyboard.exitKey = KEY_ESCAPE;
-    CORE.Input.Mouse.scale = (Vector2){ 1.0f, 1.0f };
-    CORE.Input.Mouse.cursor = MOUSE_CURSOR_ARROW;
-    CORE.Input.Gamepad.lastButtonPressed = GAMEPAD_BUTTON_UNKNOWN;
-
-    // Initialize platform
-    //--------------------------------------------------------------
-    InitPlatform();
-    //--------------------------------------------------------------
-
-    // Initialize OpenGL context (states and resources)
-    // NOTE: CORE.Window.currentFbo.width and CORE.Window.currentFbo.height not used, just stored as globals in rlgl
-    rlglInit(CORE.Window.currentFbo.width, CORE.Window.currentFbo.height);
-
-    // Setup default viewport
-    // NOTE: It updated CORE.Window.render.width and CORE.Window.render.height
-    SetupViewport(CORE.Window.currentFbo.width, CORE.Window.currentFbo.height);
-
-#if defined(SUPPORT_MODULE_RTEXT) && defined(SUPPORT_DEFAULT_FONT)
-    // Load default font
-    // WARNING: External function: Module required: rtext
-    LoadFontDefault();
-#if defined(SUPPORT_MODULE_RSHAPES)
-    // Set font white rectangle for shapes drawing, so shapes and text can be batched together
-    // WARNING: rshapes module is required, if not available, default internal white rectangle is used
-    Rectangle rec = GetFontDefault().recs[95];
-    if (CORE.Window.flags & FLAG_MSAA_4X_HINT)
-    {
-        // NOTE: We try to maxime rec padding to avoid pixel bleeding on MSAA filtering
-        SetShapesTexture(GetFontDefault().texture, (Rectangle){rec.x + 2, rec.y + 2, 1, 1});
-    }
-    else
-    {
-        // NOTE: We set up a 1px padding on char rectangle to avoid pixel bleeding
-        SetShapesTexture(GetFontDefault().texture, (Rectangle){rec.x + 1, rec.y + 1, rec.width - 2, rec.height - 2});
-    }
-#endif
-#else
-#if defined(SUPPORT_MODULE_RSHAPES)
-    // Set default texture and rectangle to be used for shapes drawing
-    // NOTE: rlgl default texture is a 1x1 pixel UNCOMPRESSED_R8G8B8A8
-    Texture2D texture = {rlGetTextureIdDefault(), 1, 1, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8};
-    SetShapesTexture(texture, (Rectangle){0.0f, 0.0f, 1.0f, 1.0f}); // WARNING: Module required: rshapes
-#endif
-#endif
-#if defined(SUPPORT_MODULE_RTEXT) && defined(SUPPORT_DEFAULT_FONT)
-    if ((CORE.Window.flags & FLAG_WINDOW_HIGHDPI) > 0)
-    {
-        // Set default font texture filter for HighDPI (blurry)
-        // RL_TEXTURE_FILTER_LINEAR - tex filter: BILINEAR, no mipmaps
-        rlTextureParameters(GetFontDefault().texture.id, RL_TEXTURE_MIN_FILTER, RL_TEXTURE_FILTER_LINEAR);
-        rlTextureParameters(GetFontDefault().texture.id, RL_TEXTURE_MAG_FILTER, RL_TEXTURE_FILTER_LINEAR);
-    }
-#endif
-
-#if defined(SUPPORT_EVENTS_AUTOMATION)
-    events = (AutomationEvent *)RL_CALLOC(MAX_CODE_AUTOMATION_EVENTS, sizeof(AutomationEvent));
-    CORE.Time.frameCounter = 0;
-#endif
-
-    // Initialize random seed
-    SetRandomSeed((unsigned int)time(NULL));
-
-    TRACELOG(LOG_INFO, "PLATFORM: WEB: Application initialized successfully");
-}
-
-// Close window and unload OpenGL context
-void CloseWindow(void)
-{
-#if defined(SUPPORT_GIF_RECORDING)
-    if (gifRecording)
-    {
-        MsfGifResult result = msf_gif_end(&gifState);
-        msf_gif_free(result);
-        gifRecording = false;
-    }
-#endif
-
-#if defined(SUPPORT_MODULE_RTEXT) && defined(SUPPORT_DEFAULT_FONT)
-    UnloadFontDefault(); // WARNING: Module required: rtext
-#endif
-
-    rlglClose(); // De-init rlgl
-
-    // De-initialize platform
-    //--------------------------------------------------------------
-    ClosePlatform();
-    //--------------------------------------------------------------
-
-#if defined(SUPPORT_EVENTS_AUTOMATION)
-    RL_FREE(events);
-#endif
-
-    CORE.Window.ready = false;
-    TRACELOG(LOG_INFO, "Window closed successfully");
-}
 
 // Check if application should close
 bool WindowShouldClose(void)
@@ -700,12 +559,11 @@ void PollInputEvents(void)
     // Reset keys/chars pressed registered
     CORE.Input.Keyboard.keyPressedQueueCount = 0;
     CORE.Input.Keyboard.charPressedQueueCount = 0;
-    // Reset key repeats
-    for (int i = 0; i < MAX_KEYBOARD_KEYS; i++) CORE.Input.Keyboard.keyRepeatInFrame[i] = 0;
 
     // Reset last gamepad button/axis registered state
     CORE.Input.Gamepad.lastButtonPressed = 0;       // GAMEPAD_BUTTON_UNKNOWN
     //CORE.Input.Gamepad.axisCount = 0;
+
     // Keyboard/Mouse input polling (automatically managed by GLFW3 through callback)
 
     // Register previous keys states
@@ -733,7 +591,6 @@ void PollInputEvents(void)
     // so, if mouse is not moved it returns a (0, 0) position... this behaviour should be reviewed!
     //for (int i = 0; i < MAX_TOUCH_POINTS; i++) CORE.Input.Touch.position[i] = (Vector2){ 0, 0 };
 
-    CORE.Window.resizedLastFrame = false;
 
     // Gamepad support using emscripten API
     // NOTE: GLFW3 joystick functionality not available in web
@@ -802,15 +659,20 @@ void PollInputEvents(void)
             CORE.Input.Gamepad.axisCount[i] = gamepadState.numAxes;
         }
     }
-}
 
+    CORE.Window.resizedLastFrame = false;
+
+    // TODO: This code does not seem to do anything??
+    //if (CORE.Window.eventWaiting) glfwWaitEvents();     // Wait for in input events before continue (drawing is paused)
+    //else glfwPollEvents(); // Poll input events: keyboard/mouse/window events (callbacks) --> WARNING: Where is key input reseted?
+}
 
 //----------------------------------------------------------------------------------
 // Module Internal Functions Definition
 //----------------------------------------------------------------------------------
 
 // Initialize platform: graphics, inputs and more
-static int InitPlatform(void)
+int InitPlatform(void)
 {
     glfwSetErrorCallback(ErrorCallback);
 
@@ -818,6 +680,8 @@ static int InitPlatform(void)
     int result = glfwInit();
     if (result == GLFW_FALSE) { TRACELOG(LOG_WARNING, "GLFW: Failed to initialize GLFW"); return -1; }
 
+    // Initialize graphic device: display/window and graphic context
+    //----------------------------------------------------------------------------
     glfwDefaultWindowHints(); // Set default windows hints
     // glfwWindowHint(GLFW_RED_BITS, 8);             // Framebuffer red color component bits
     // glfwWindowHint(GLFW_GREEN_BITS, 8);           // Framebuffer green color component bits
@@ -900,6 +764,7 @@ static int InitPlatform(void)
     }
     else if (rlGetVersion() == RL_OPENGL_ES_30) // Request OpenGL ES 3.0 context
     {
+        // TODO: It seems WebGL 2.0 context is not set despite being requested
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
         glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
@@ -1003,43 +868,45 @@ static int InitPlatform(void)
     glfwSetCursorEnterCallback(platform.handle, CursorEnterCallback);
 
     glfwMakeContextCurrent(platform.handle);
+    result = true; // TODO: WARNING: glfwGetError(NULL); symbol can not be found in Web
+
+    // Check context activation
+    if (result == true) //(result != GLFW_NO_WINDOW_CONTEXT) && (result != GLFW_PLATFORM_ERROR))
+    {
+        CORE.Window.ready = true;
+
+        int fbWidth = CORE.Window.screen.width;
+        int fbHeight = CORE.Window.screen.height;
+
+        CORE.Window.render.width = fbWidth;
+        CORE.Window.render.height = fbHeight;
+        CORE.Window.currentFbo.width = fbWidth;
+        CORE.Window.currentFbo.height = fbHeight;
+
+        TRACELOG(LOG_INFO, "DISPLAY: Device initialized successfully");
+        TRACELOG(LOG_INFO, "    > Display size: %i x %i", CORE.Window.display.width, CORE.Window.display.height);
+        TRACELOG(LOG_INFO, "    > Screen size:  %i x %i", CORE.Window.screen.width, CORE.Window.screen.height);
+        TRACELOG(LOG_INFO, "    > Render size:  %i x %i", CORE.Window.render.width, CORE.Window.render.height);
+        TRACELOG(LOG_INFO, "    > Viewport offsets: %i, %i", CORE.Window.renderOffset.x, CORE.Window.renderOffset.y);
+    }
+    else
+    {
+        TRACELOG(LOG_FATAL, "PLATFORM: Failed to initialize graphics device");
+        return -1;
+    }
+
+    if ((CORE.Window.flags & FLAG_WINDOW_MINIMIZED) > 0) MinimizeWindow();
+
+    // If graphic device is no properly initialized, we end program
+    if (!CORE.Window.ready) { TRACELOG(LOG_FATAL, "PLATFORM: Failed to initialize graphic device"); return -1; }
 
     // Load OpenGL extensions
     // NOTE: GL procedures address loader is required to load extensions
     rlLoadExtensions(glfwGetProcAddress);
+    //----------------------------------------------------------------------------
 
-    if ((CORE.Window.flags & FLAG_WINDOW_MINIMIZED) > 0) MinimizeWindow();
-
-    // Try to enable GPU V-Sync, so frames are limited to screen refresh rate (60Hz -> 60 FPS)
-    // NOTE: V-Sync can be enabled by graphic driver configuration, it doesn't need
-    // to be activated on web platforms since VSync is enforced there.
-
-    int fbWidth = CORE.Window.screen.width;
-    int fbHeight = CORE.Window.screen.height;
-
-    CORE.Window.render.width = fbWidth;
-    CORE.Window.render.height = fbHeight;
-    CORE.Window.currentFbo.width = fbWidth;
-    CORE.Window.currentFbo.height = fbHeight;
-
-    TRACELOG(LOG_INFO, "DISPLAY: Device initialized successfully");
-    TRACELOG(LOG_INFO, "    > Display size: %i x %i", CORE.Window.display.width, CORE.Window.display.height);
-    TRACELOG(LOG_INFO, "    > Screen size:  %i x %i", CORE.Window.screen.width, CORE.Window.screen.height);
-    TRACELOG(LOG_INFO, "    > Render size:  %i x %i", CORE.Window.render.width, CORE.Window.render.height);
-    TRACELOG(LOG_INFO, "    > Viewport offsets: %i, %i", CORE.Window.renderOffset.x, CORE.Window.renderOffset.y);
-
-    CORE.Window.ready = true;   // TODO: Proper validation on windows/context creation
-
-    // If graphic device is no properly initialized, we end program
-    if (!CORE.Window.ready) { TRACELOG(LOG_FATAL, "PLATFORM: Failed to initialize graphic device"); return -1; }
-    else SetWindowPosition(GetMonitorWidth(GetCurrentMonitor())/2 - CORE.Window.screen.width/2, GetMonitorHeight(GetCurrentMonitor())/2 - CORE.Window.screen.height/2);
-
-    // Initialize hi-res timer
-    InitTimer();
-
-    // Initialize base path for storage
-    CORE.Storage.basePath = GetWorkingDirectory();
-
+    // Initialize input events callbacks
+    //----------------------------------------------------------------------------
     // Setup callback functions for the DOM events
     emscripten_set_fullscreenchange_callback("#canvas", NULL, 1, EmscriptenFullscreenChangeCallback);
 
@@ -1068,12 +935,25 @@ static int InitPlatform(void)
     // Support gamepad events (not provided by GLFW3 on emscripten)
     emscripten_set_gamepadconnected_callback(NULL, 1, EmscriptenGamepadCallback);
     emscripten_set_gamepaddisconnected_callback(NULL, 1, EmscriptenGamepadCallback);
+    //----------------------------------------------------------------------------
+
+    // Initialize timming system
+    //----------------------------------------------------------------------------
+    InitTimer();
+    //----------------------------------------------------------------------------
+
+    // Initialize storage system
+    //----------------------------------------------------------------------------
+    CORE.Storage.basePath = GetWorkingDirectory();
+    //----------------------------------------------------------------------------
+
+    TRACELOG(LOG_INFO, "PLATFORM: WEB: Initialized successfully");
 
     return 0;
 }
 
 // Close platform
-static void ClosePlatform(void)
+void ClosePlatform(void)
 {
     glfwDestroyWindow(platform.handle);
     glfwTerminate();
@@ -1122,11 +1002,13 @@ static void WindowIconifyCallback(GLFWwindow *window, int iconified)
     else CORE.Window.flags &= ~FLAG_WINDOW_MINIMIZED;           // The window was restored
 }
 
+/*
 // GLFW3 Window Maximize Callback, runs when window is maximized
 static void WindowMaximizeCallback(GLFWwindow *window, int maximized)
 {
     // TODO.
 }
+*/
 
 // GLFW3 WindowFocus Callback, runs when window get/lose focus
 static void WindowFocusCallback(GLFWwindow *window, int focused)
@@ -1184,65 +1066,6 @@ static void KeyCallback(GLFWwindow *window, int key, int scancode, int action, i
 
     // Check the exit key to set close window
     if ((key == CORE.Input.Keyboard.exitKey) && (action == GLFW_PRESS)) glfwSetWindowShouldClose(platform.handle, GLFW_TRUE);
-
-#if defined(SUPPORT_SCREEN_CAPTURE)
-    if ((key == GLFW_KEY_F12) && (action == GLFW_PRESS))
-    {
-#if defined(SUPPORT_GIF_RECORDING)
-        if (mods & GLFW_MOD_CONTROL)
-        {
-            if (gifRecording)
-            {
-                gifRecording = false;
-
-                MsfGifResult result = msf_gif_end(&gifState);
-
-                SaveFileData(TextFormat("%s/screenrec%03i.gif", CORE.Storage.basePath, screenshotCounter), result.data, (unsigned int)result.dataSize);
-                msf_gif_free(result);
-
-                // Download file from MEMFS (emscripten memory filesystem)
-                // saveFileFromMEMFSToDisk() function is defined in raylib/templates/web_shel/shell.html
-                emscripten_run_script(TextFormat("saveFileFromMEMFSToDisk('%s','%s')", TextFormat("screenrec%03i.gif", screenshotCounter - 1), TextFormat("screenrec%03i.gif", screenshotCounter - 1)));
-
-                TRACELOG(LOG_INFO, "SYSTEM: Finish animated GIF recording");
-            }
-            else
-            {
-                gifRecording = true;
-                gifFrameCounter = 0;
-
-                Vector2 scale = GetWindowScaleDPI();
-                msf_gif_begin(&gifState, (int)((float)CORE.Window.render.width*scale.x), (int)((float)CORE.Window.render.height*scale.y));
-                screenshotCounter++;
-
-                TRACELOG(LOG_INFO, "SYSTEM: Start animated GIF recording: %s", TextFormat("screenrec%03i.gif", screenshotCounter));
-            }
-        }
-        else
-#endif  // SUPPORT_GIF_RECORDING
-        {
-            TakeScreenshot(TextFormat("screenshot%03i.png", screenshotCounter));
-            screenshotCounter++;
-        }
-    }
-#endif  // SUPPORT_SCREEN_CAPTURE
-
-#if defined(SUPPORT_EVENTS_AUTOMATION)
-    if ((key == GLFW_KEY_F11) && (action == GLFW_PRESS))
-    {
-        eventsRecording = !eventsRecording;
-
-        // On finish recording, we export events into a file
-        if (!eventsRecording) ExportAutomationEvents("eventsrec.rep");
-    }
-    else if ((key == GLFW_KEY_F9) && (action == GLFW_PRESS))
-    {
-        LoadAutomationEvents("eventsrec.rep");
-        eventsPlaying = true;
-
-        TRACELOG(LOG_WARNING, "eventsPlaying enabled!");
-    }
-#endif
 }
 
 // GLFW3 Char Key Callback, runs on key down (gets equivalent unicode char value)

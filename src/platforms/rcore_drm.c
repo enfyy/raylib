@@ -3,8 +3,8 @@
 *   rcore_drm - Functions to manage window, graphics device and inputs
 *
 *   PLATFORM: DRM
-*       - Raspberry Pi 0-5
-*       - Linux native mode (KMS driver)
+*       - Raspberry Pi 0-5 (DRM/KMS)
+*       - Linux DRM subsystem (KMS mode)
 *
 *   LIMITATIONS:
 *       - Most of the window/monitor functions are not implemented (not required)
@@ -23,7 +23,8 @@
 *           running processes orblocking the device if not restored properly. Use with care.
 *
 *   DEPENDENCIES:
-*       gestures - Gestures system for touch-ready devices (or simulated from mouse inputs)
+*       - DRM and GLM: System libraries for display initialization and configuration
+*       - gestures: Gestures system for touch-ready devices (or simulated from mouse inputs)
 *
 *
 *   LICENSE: zlib/libpng
@@ -121,6 +122,10 @@ typedef struct {
     Vector2 eventWheelMove;             // Registers the event mouse wheel variation
     // NOTE: currentButtonState[] can't be written directly due to multithreading, app could miss the update
     char currentButtonStateEvdev[MAX_MOUSE_BUTTONS]; // Holds the new mouse state for the next polling event to grab
+    bool cursorRelative;                // Relative cursor mode
+    int mouseFd;                        // File descriptor for the evdev mouse/touch/gestures
+    Rectangle absRange;                 // Range of values for absolute pointing devices (touchscreens)
+    int touchSlot;                      // Hold the touch slot number of the currently being sent multitouch block
 
     // Gamepad data
     pthread_t gamepadThreadId;          // Gamepad reading thread id
@@ -136,10 +141,43 @@ extern CoreData CORE;                   // Global CORE state context
 static PlatformData platform = { 0 };   // Platform specific data
 
 //----------------------------------------------------------------------------------
+// Local Variables Definition
+//----------------------------------------------------------------------------------
+// Scancode to keycode mapping for US keyboards
+// TODO: Replace this with a keymap from the X11 to get the correct regional map for the keyboard:
+// Currently non US keyboards will have the wrong mapping for some keys
+static const int keymapUS[] = {
+    0, 256, 49, 50, 51, 52, 53, 54, 55, 56, 57, 48, 45, 61, 259, 258, 81, 87, 69, 82, 84,
+    89, 85, 73, 79, 80, 91, 93, 257, 341, 65, 83, 68, 70, 71, 72, 74, 75, 76, 59, 39, 96,
+    340, 92, 90, 88, 67, 86, 66, 78, 77, 44, 46, 47, 344, 332, 342, 32, 280, 290, 291,
+    292, 293, 294, 295, 296, 297, 298, 299, 282, 281, 327, 328, 329, 333, 324, 325,
+    326, 334, 321, 322, 323, 320, 330, 0, 85, 86, 300, 301, 89, 90, 91, 92, 93, 94, 95,
+    335, 345, 331, 283, 346, 101, 268, 265, 266, 263, 262, 269, 264, 267, 260, 261,
+    112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 347, 127,
+    128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143,
+    144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159,
+    160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175,
+    176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191,
+    192, 193, 194, 0, 0, 0, 0, 0, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210,
+    211, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224, 225, 226,
+    227, 228, 229, 230, 231, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242,
+    243, 244, 245, 246, 247, 248, 0, 0, 0, 0, 0, 0, 0
+};
+
+// NOTE: The complete evdev EV_KEY list can be found at /usr/include/linux/input-event-codes.h
+// TODO: Complete the LUT with all unicode decimal values
+static const int EvkeyToUnicodeLUT[] = {
+    0, 27, 49, 50, 51, 52, 53, 54, 55, 56, 57, 48, 45, 61, 8, 0, 113, 119, 101, 114,
+    116, 121, 117, 105, 111, 112, 0, 0, 13, 0, 97, 115, 100, 102, 103, 104, 106, 107, 108, 59,
+    39, 96, 0, 92, 122, 120, 99, 118, 98, 110, 109, 44, 46, 47, 0, 0, 0, 32
+    // LUT currently incomplete, just mapped the most essential keys
+};
+
+//----------------------------------------------------------------------------------
 // Module Internal Functions Declaration
 //----------------------------------------------------------------------------------
-static int InitPlatform(void);          // Initialize platform (graphics, inputs and more)
-static void ClosePlatform(void);        // Close platform
+int InitPlatform(void);          // Initialize platform (graphics, inputs and more)
+void ClosePlatform(void);        // Close platform
 
 static void InitKeyboard(void);                 // Initialize raw keyboard system
 static void RestoreKeyboard(void);              // Restore keyboard system
@@ -167,150 +205,6 @@ static int FindNearestConnectorMode(const drmModeConnector *connector, uint widt
 //----------------------------------------------------------------------------------
 // Module Functions Definition: Window and Graphics Device
 //----------------------------------------------------------------------------------
-
-// Initialize window and OpenGL context
-// NOTE: data parameter could be used to pass any kind of required data to the initialization
-void InitWindow(int width, int height, const char *title)
-{
-    TRACELOG(LOG_INFO, "Initializing raylib %s", RAYLIB_VERSION);
-
-    TRACELOG(LOG_INFO, "Supported raylib modules:");
-    TRACELOG(LOG_INFO, "    > rcore:..... loaded (mandatory)");
-    TRACELOG(LOG_INFO, "    > rlgl:...... loaded (mandatory)");
-#if defined(SUPPORT_MODULE_RSHAPES)
-    TRACELOG(LOG_INFO, "    > rshapes:... loaded (optional)");
-#else
-    TRACELOG(LOG_INFO, "    > rshapes:... not loaded (optional)");
-#endif
-#if defined(SUPPORT_MODULE_RTEXTURES)
-    TRACELOG(LOG_INFO, "    > rtextures:. loaded (optional)");
-#else
-    TRACELOG(LOG_INFO, "    > rtextures:. not loaded (optional)");
-#endif
-#if defined(SUPPORT_MODULE_RTEXT)
-    TRACELOG(LOG_INFO, "    > rtext:..... loaded (optional)");
-#else
-    TRACELOG(LOG_INFO, "    > rtext:..... not loaded (optional)");
-#endif
-#if defined(SUPPORT_MODULE_RMODELS)
-    TRACELOG(LOG_INFO, "    > rmodels:... loaded (optional)");
-#else
-    TRACELOG(LOG_INFO, "    > rmodels:... not loaded (optional)");
-#endif
-#if defined(SUPPORT_MODULE_RAUDIO)
-    TRACELOG(LOG_INFO, "    > raudio:.... loaded (optional)");
-#else
-    TRACELOG(LOG_INFO, "    > raudio:.... not loaded (optional)");
-#endif
-
-    // Initialize window data
-    CORE.Window.screen.width = width;
-    CORE.Window.screen.height = height;
-    CORE.Window.eventWaiting = false;
-    CORE.Window.screenScale = MatrixIdentity();     // No draw scaling required by default
-    if ((title != NULL) && (title[0] != 0)) CORE.Window.title = title;
-
-    // Initialize global input state
-    memset(&CORE.Input, 0, sizeof(CORE.Input));     // Reset CORE.Input structure to 0
-    CORE.Input.Keyboard.exitKey = KEY_ESCAPE;
-    CORE.Input.Mouse.scale = (Vector2){ 1.0f, 1.0f };
-    CORE.Input.Mouse.cursor = MOUSE_CURSOR_ARROW;
-    CORE.Input.Gamepad.lastButtonPressed = GAMEPAD_BUTTON_UNKNOWN;
-
-    // Initialize platform
-    //--------------------------------------------------------------
-    InitPlatform();
-    //--------------------------------------------------------------
-
-    // Initialize rlgl default data (buffers and shaders)
-    // NOTE: CORE.Window.currentFbo.width and CORE.Window.currentFbo.height not used, just stored as globals in rlgl
-    rlglInit(CORE.Window.currentFbo.width, CORE.Window.currentFbo.height);
-
-    // Setup default viewport
-    SetupViewport(CORE.Window.currentFbo.width, CORE.Window.currentFbo.height);
-
-#if defined(SUPPORT_MODULE_RTEXT) && defined(SUPPORT_DEFAULT_FONT)
-    // Load default font
-    // WARNING: External function: Module required: rtext
-    LoadFontDefault();
-#if defined(SUPPORT_MODULE_RSHAPES)
-    // Set font white rectangle for shapes drawing, so shapes and text can be batched together
-    // WARNING: rshapes module is required, if not available, default internal white rectangle is used
-    Rectangle rec = GetFontDefault().recs[95];
-    if (CORE.Window.flags & FLAG_MSAA_4X_HINT)
-    {
-        // NOTE: We try to maxime rec padding to avoid pixel bleeding on MSAA filtering
-        SetShapesTexture(GetFontDefault().texture, (Rectangle){rec.x + 2, rec.y + 2, 1, 1});
-    }
-    else
-    {
-        // NOTE: We set up a 1px padding on char rectangle to avoid pixel bleeding
-        SetShapesTexture(GetFontDefault().texture, (Rectangle){rec.x + 1, rec.y + 1, rec.width - 2, rec.height - 2});
-    }
-#endif
-#else
-#if defined(SUPPORT_MODULE_RSHAPES)
-    // Set default texture and rectangle to be used for shapes drawing
-    // NOTE: rlgl default texture is a 1x1 pixel UNCOMPRESSED_R8G8B8A8
-    Texture2D texture = {rlGetTextureIdDefault(), 1, 1, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8};
-    SetShapesTexture(texture, (Rectangle){0.0f, 0.0f, 1.0f, 1.0f}); // WARNING: Module required: rshapes
-#endif
-#endif
-#if defined(SUPPORT_MODULE_RTEXT) && defined(SUPPORT_DEFAULT_FONT)
-    if ((CORE.Window.flags & FLAG_WINDOW_HIGHDPI) > 0)
-    {
-        // Set default font texture filter for HighDPI (blurry)
-        // RL_TEXTURE_FILTER_LINEAR - tex filter: BILINEAR, no mipmaps
-        rlTextureParameters(GetFontDefault().texture.id, RL_TEXTURE_MIN_FILTER, RL_TEXTURE_FILTER_LINEAR);
-        rlTextureParameters(GetFontDefault().texture.id, RL_TEXTURE_MAG_FILTER, RL_TEXTURE_FILTER_LINEAR);
-    }
-#endif
-
-#if defined(SUPPORT_EVENTS_AUTOMATION)
-    events = (AutomationEvent *)RL_CALLOC(MAX_CODE_AUTOMATION_EVENTS, sizeof(AutomationEvent));
-    CORE.Time.frameCounter = 0;
-#endif
-
-    // Initialize random seed
-    SetRandomSeed((unsigned int)time(NULL));
-
-    TRACELOG(LOG_INFO, "PLATFORM: DRM: Application initialized successfully");
-}
-
-// Close window and unload OpenGL context
-void CloseWindow(void)
-{
-#if defined(SUPPORT_GIF_RECORDING)
-    if (gifRecording)
-    {
-        MsfGifResult result = msf_gif_end(&gifState);
-        msf_gif_free(result);
-        gifRecording = false;
-    }
-#endif
-
-#if defined(SUPPORT_MODULE_RTEXT) && defined(SUPPORT_DEFAULT_FONT)
-    UnloadFontDefault();        // WARNING: Module required: rtext
-#endif
-
-    rlglClose();                // De-init rlgl
-
-#if defined(_WIN32) && defined(SUPPORT_WINMM_HIGHRES_TIMER) && !defined(SUPPORT_BUSY_WAIT_LOOP)
-    timeEndPeriod(1);           // Restore time period
-#endif
-
-    // De-initialize platform
-    //--------------------------------------------------------------
-    ClosePlatform();
-    //--------------------------------------------------------------
-
-#if defined(SUPPORT_EVENTS_AUTOMATION)
-    RL_FREE(events);
-#endif
-
-    CORE.Window.ready = false;
-    TRACELOG(LOG_INFO, "Window closed successfully");
-}
 
 // Check if application should close
 // NOTE: By default, if KEY_ESCAPE pressed
@@ -544,6 +438,7 @@ void EnableCursor(void)
     // Set cursor position in the middle
     SetMousePosition(CORE.Window.screen.width/2, CORE.Window.screen.height/2);
 
+    platform.cursorRelative = false;
     CORE.Input.Mouse.cursorHidden = false;
 }
 
@@ -551,8 +446,9 @@ void EnableCursor(void)
 void DisableCursor(void)
 {
     // Set cursor position in the middle
-    SetMousePosition(CORE.Window.screen.width/2, CORE.Window.screen.height/2);
+    SetMousePosition(0, 0);
 
+    platform.cursorRelative = true;
     CORE.Input.Mouse.cursorHidden = true;
 }
 
@@ -666,6 +562,10 @@ void PollInputEvents(void)
 
     PollKeyboardEvents();
 
+    // Register previous mouse position
+    if (platform.cursorRelative) CORE.Input.Mouse.currentPosition = (Vector2){ 0.0f, 0.0f };
+    else CORE.Input.Mouse.previousPosition = CORE.Input.Mouse.currentPosition;
+
     // Register previous mouse states
     CORE.Input.Mouse.previousWheelMove = CORE.Input.Mouse.currentWheelMove;
     CORE.Input.Mouse.currentWheelMove = platform.eventWheelMove;
@@ -692,6 +592,9 @@ void PollInputEvents(void)
     // Reset touch positions
     //for (int i = 0; i < MAX_TOUCH_POINTS; i++) CORE.Input.Touch.position[i] = (Vector2){ 0, 0 };
 
+    // Map touch position to mouse position for convenience
+    CORE.Input.Touch.position[0] = CORE.Input.Mouse.currentPosition;
+
 #if defined(SUPPORT_SSH_KEYBOARD_RPI)
     // NOTE: Keyboard reading could be done using input_event(s) or just read from stdin, both methods are used here.
     // stdin reading is still used for legacy purposes, it allows keyboard input trough SSH console
@@ -701,15 +604,191 @@ void PollInputEvents(void)
     // NOTE: Mouse input events polling is done asynchronously in another pthread - EventThread()
     // NOTE: Gamepad (Joystick) input events polling is done asynchonously in another pthread - GamepadThread()
 #endif
-}
 
+    // Handle the mouse/touch/gestures events:
+    // NOTE: Replaces the EventThread handling that is now commented.
+    {
+        int fd = platform.mouseFd;
+        if (fd == -1) return;
+
+        struct input_event event = { 0 };
+
+        int touchAction = -1;           // 0-TOUCH_ACTION_UP, 1-TOUCH_ACTION_DOWN, 2-TOUCH_ACTION_MOVE
+        bool gestureUpdate = false;     // Flag to note gestures require to update
+
+        // Try to read data from the mouse/touch/gesture and only continue if successful
+        while (read(fd, &event, sizeof(event)) == (int)sizeof(event))
+        {
+            // Relative movement parsing
+            if (event.type == EV_REL)
+            {
+                if (event.code == REL_X)
+                {
+                    if (platform.cursorRelative)
+                    {
+                        CORE.Input.Mouse.currentPosition.x = event.value;
+                        CORE.Input.Mouse.previousPosition.x = 0.0f;
+                    }
+                    else CORE.Input.Mouse.currentPosition.x += event.value;
+                    CORE.Input.Touch.position[0].x = CORE.Input.Mouse.currentPosition.x;
+
+                    touchAction = 2;    // TOUCH_ACTION_MOVE
+                    gestureUpdate = true;
+                }
+
+                if (event.code == REL_Y)
+                {
+                    if (platform.cursorRelative)
+                    {
+                        CORE.Input.Mouse.currentPosition.y = event.value;
+                        CORE.Input.Mouse.previousPosition.y = 0.0f;
+                    }
+                    else CORE.Input.Mouse.currentPosition.y += event.value;
+                    CORE.Input.Touch.position[0].y = CORE.Input.Mouse.currentPosition.y;
+
+                    touchAction = 2;    // TOUCH_ACTION_MOVE
+                    gestureUpdate = true;
+                }
+
+                if (event.code == REL_WHEEL) platform.eventWheelMove.y += event.value;
+            }
+
+            // Absolute movement parsing
+            if (event.type == EV_ABS)
+            {
+                // Basic movement
+                if (event.code == ABS_X)
+                {
+                    CORE.Input.Mouse.currentPosition.x = (event.value - platform.absRange.x)*CORE.Window.screen.width/platform.absRange.width;    // Scale according to absRange
+                    CORE.Input.Touch.position[0].x = (event.value - platform.absRange.x)*CORE.Window.screen.width/platform.absRange.width;        // Scale according to absRange
+
+                    touchAction = 2;    // TOUCH_ACTION_MOVE
+                    gestureUpdate = true;
+                }
+
+                if (event.code == ABS_Y)
+                {
+                    CORE.Input.Mouse.currentPosition.y = (event.value - platform.absRange.y)*CORE.Window.screen.height/platform.absRange.height;  // Scale according to absRange
+                    CORE.Input.Touch.position[0].y = (event.value - platform.absRange.y)*CORE.Window.screen.height/platform.absRange.height;      // Scale according to absRange
+
+                    touchAction = 2;    // TOUCH_ACTION_MOVE
+                    gestureUpdate = true;
+                }
+
+                // Multitouch movement
+                if (event.code == ABS_MT_SLOT) platform.touchSlot = event.value;   // Remember the slot number for the folowing events
+
+                if (event.code == ABS_MT_POSITION_X)
+                {
+                    if (platform.touchSlot < MAX_TOUCH_POINTS) CORE.Input.Touch.position[platform.touchSlot].x = (event.value - platform.absRange.x)*CORE.Window.screen.width/platform.absRange.width;    // Scale according to absRange
+                }
+
+                if (event.code == ABS_MT_POSITION_Y)
+                {
+                    if (platform.touchSlot < MAX_TOUCH_POINTS) CORE.Input.Touch.position[platform.touchSlot].y = (event.value - platform.absRange.y)*CORE.Window.screen.height/platform.absRange.height;  // Scale according to absRange
+                }
+
+                if (event.code == ABS_MT_TRACKING_ID)
+                {
+                    if ((event.value < 0) && (platform.touchSlot < MAX_TOUCH_POINTS))
+                    {
+                        // Touch has ended for this point
+                        CORE.Input.Touch.position[platform.touchSlot].x = -1;
+                        CORE.Input.Touch.position[platform.touchSlot].y = -1;
+                    }
+                }
+
+                // Touchscreen tap
+                if (event.code == ABS_PRESSURE)
+                {
+                    int previousMouseLeftButtonState = platform.currentButtonStateEvdev[MOUSE_BUTTON_LEFT];
+
+                    if (!event.value && previousMouseLeftButtonState)
+                    {
+                        platform.currentButtonStateEvdev[MOUSE_BUTTON_LEFT] = 0;
+
+                        touchAction = 0;    // TOUCH_ACTION_UP
+                        gestureUpdate = true;
+                    }
+
+                    if (event.value && !previousMouseLeftButtonState)
+                    {
+                        platform.currentButtonStateEvdev[MOUSE_BUTTON_LEFT] = 1;
+
+                        touchAction = 1;    // TOUCH_ACTION_DOWN
+                        gestureUpdate = true;
+                    }
+                }
+
+            }
+
+            // Button parsing
+            if (event.type == EV_KEY)
+            {
+                // Mouse button parsing
+                if ((event.code == BTN_TOUCH) || (event.code == BTN_LEFT))
+                {
+                    platform.currentButtonStateEvdev[MOUSE_BUTTON_LEFT] = event.value;
+
+                    if (event.value > 0) touchAction = 1;   // TOUCH_ACTION_DOWN
+                    else touchAction = 0;       // TOUCH_ACTION_UP
+                    gestureUpdate = true;
+                }
+
+                if (event.code == BTN_RIGHT) platform.currentButtonStateEvdev[MOUSE_BUTTON_RIGHT] = event.value;
+                if (event.code == BTN_MIDDLE) platform.currentButtonStateEvdev[MOUSE_BUTTON_MIDDLE] = event.value;
+                if (event.code == BTN_SIDE) platform.currentButtonStateEvdev[MOUSE_BUTTON_SIDE] = event.value;
+                if (event.code == BTN_EXTRA) platform.currentButtonStateEvdev[MOUSE_BUTTON_EXTRA] = event.value;
+                if (event.code == BTN_FORWARD) platform.currentButtonStateEvdev[MOUSE_BUTTON_FORWARD] = event.value;
+                if (event.code == BTN_BACK) platform.currentButtonStateEvdev[MOUSE_BUTTON_BACK] = event.value;
+            }
+
+            // Screen confinement
+            if (!CORE.Input.Mouse.cursorHidden)
+            {
+                if (CORE.Input.Mouse.currentPosition.x < 0) CORE.Input.Mouse.currentPosition.x = 0;
+                if (CORE.Input.Mouse.currentPosition.x > CORE.Window.screen.width/CORE.Input.Mouse.scale.x) CORE.Input.Mouse.currentPosition.x = CORE.Window.screen.width/CORE.Input.Mouse.scale.x;
+
+                if (CORE.Input.Mouse.currentPosition.y < 0) CORE.Input.Mouse.currentPosition.y = 0;
+                if (CORE.Input.Mouse.currentPosition.y > CORE.Window.screen.height/CORE.Input.Mouse.scale.y) CORE.Input.Mouse.currentPosition.y = CORE.Window.screen.height/CORE.Input.Mouse.scale.y;
+            }
+
+            // Update touch point count
+            CORE.Input.Touch.pointCount = 0;
+            for (int i = 0; i < MAX_TOUCH_POINTS; i++)
+            {
+                if (CORE.Input.Touch.position[i].x >= 0) CORE.Input.Touch.pointCount++;
+            }
+
+#if defined(SUPPORT_GESTURES_SYSTEM)
+            if (gestureUpdate)
+            {
+                GestureEvent gestureEvent = { 0 };
+
+                gestureEvent.touchAction = touchAction;
+                gestureEvent.pointCount = CORE.Input.Touch.pointCount;
+
+                for (int i = 0; i < MAX_TOUCH_POINTS; i++)
+                {
+                    gestureEvent.pointId[i] = i;
+                    gestureEvent.position[i] = CORE.Input.Touch.position[i];
+                }
+
+                ProcessGestureEvent(gestureEvent);
+
+                gestureUpdate = false;
+            }
+#endif
+        }
+    }
+}
 
 //----------------------------------------------------------------------------------
 // Module Internal Functions Definition
 //----------------------------------------------------------------------------------
 
 // Initialize platform: graphics, inputs and more
-static int InitPlatform(void)
+int InitPlatform(void)
 {
     platform.fd = -1;
     platform.connector = NULL;
@@ -720,6 +799,8 @@ static int InitPlatform(void)
     platform.prevBO = NULL;
     platform.prevFB = 0;
 
+    // Initialize graphic device: display/window and graphic context
+    //----------------------------------------------------------------------------
     CORE.Window.fullscreen = true;
     CORE.Window.flags |= FLAG_FULLSCREEN_MODE;
 
@@ -990,7 +1071,6 @@ static int InitPlatform(void)
     }
 
     // Create an EGL window surface
-    //---------------------------------------------------------------------------------
     platform.surface = eglCreateWindowSurface(platform.device, platform.config, (EGLNativeWindowType)platform.gbmSurface, NULL);
     if (EGL_NO_SURFACE == platform.surface)
     {
@@ -1008,13 +1088,13 @@ static int InitPlatform(void)
     // There must be at least one frame displayed before the buffers are swapped
     //eglSwapInterval(platform.device, 1);
 
-    if (eglMakeCurrent(platform.device, platform.surface, platform.surface, platform.context) == EGL_FALSE)
+    EGLBoolean result = eglMakeCurrent(platform.device, platform.surface, platform.surface, platform.context);
+
+    // Check surface and context activation
+    if (result != EGL_FALSE)
     {
-        TRACELOG(LOG_WARNING, "DISPLAY: Failed to attach EGL rendering context to EGL surface");
-        return -1;
-    }
-    else
-    {
+        CORE.Window.ready = true;
+
         CORE.Window.render.width = CORE.Window.screen.width;
         CORE.Window.render.height = CORE.Window.screen.height;
         CORE.Window.currentFbo.width = CORE.Window.render.width;
@@ -1026,16 +1106,15 @@ static int InitPlatform(void)
         TRACELOG(LOG_INFO, "    > Render size:  %i x %i", CORE.Window.render.width, CORE.Window.render.height);
         TRACELOG(LOG_INFO, "    > Viewport offsets: %i, %i", CORE.Window.renderOffset.x, CORE.Window.renderOffset.y);
     }
-
-    // Load OpenGL extensions
-    // NOTE: GL procedures address loader is required to load extensions
-    rlLoadExtensions(eglGetProcAddress);
+    else
+    {
+        TRACELOG(LOG_FATAL, "PLATFORM: Failed to initialize graphics device");
+        return -1;
+    }
 
     if ((CORE.Window.flags & FLAG_WINDOW_MINIMIZED) > 0) MinimizeWindow();
 
-    CORE.Window.ready = true;   // TODO: Proper validation on windows/context creation
-
-        // If graphic device is no properly initialized, we end program
+    // If graphic device is no properly initialized, we end program
     if (!CORE.Window.ready) { TRACELOG(LOG_FATAL, "PLATFORM: Failed to initialize graphic device"); return -1; }
     else SetWindowPosition(GetMonitorWidth(GetCurrentMonitor()) / 2 - CORE.Window.screen.width / 2, GetMonitorHeight(GetCurrentMonitor()) / 2 - CORE.Window.screen.height / 2);
 
@@ -1045,22 +1124,36 @@ static int InitPlatform(void)
     CORE.Window.flags |= FLAG_WINDOW_MAXIMIZED;     // true
     CORE.Window.flags &= ~FLAG_WINDOW_UNFOCUSED;    // false
 
-    // Initialize hi-res timer
+    // Load OpenGL extensions
+    // NOTE: GL procedures address loader is required to load extensions
+    rlLoadExtensions(eglGetProcAddress);
+    //----------------------------------------------------------------------------
+
+    // Initialize timming system
+    //----------------------------------------------------------------------------
+    // NOTE: timming system must be initialized before the input events system
     InitTimer();
+    //----------------------------------------------------------------------------
 
-    // Initialize base path for storage
+    // Initialize input events system
+    //----------------------------------------------------------------------------
+    InitEvdevInput();   // Evdev inputs initialization
+    InitGamepad();      // Gamepad init
+    InitKeyboard();     // Keyboard init (stdin)
+    //----------------------------------------------------------------------------
+
+    // Initialize storage system
+    //----------------------------------------------------------------------------
     CORE.Storage.basePath = GetWorkingDirectory();
+    //----------------------------------------------------------------------------
 
-    // Initialize raw input system
-    InitEvdevInput(); // Evdev inputs initialization
-    InitGamepad();    // Gamepad init
-    InitKeyboard();   // Keyboard init (stdin)
+    TRACELOG(LOG_INFO, "PLATFORM: DRM: Initialized successfully");
 
     return 0;
 }
 
 // Close platform
-static void ClosePlatform(void)
+void ClosePlatform(void)
 {
     if (platform.prevFB)
     {
@@ -1148,7 +1241,6 @@ static void ClosePlatform(void)
 
     if (platform.gamepadThreadId) pthread_join(platform.gamepadThreadId, NULL);
 }
-
 
 // Initialize Keyboard system (using standard input)
 static void InitKeyboard(void)
@@ -1457,9 +1549,14 @@ static void ConfigureEvdevDevice(char *device)
             ioctl(fd, EVIOCGABS(ABS_X), &absinfo);
             worker->absRange.x = absinfo.minimum;
             worker->absRange.width = absinfo.maximum - absinfo.minimum;
+            platform.absRange.x = absinfo.minimum;
+            platform.absRange.width = absinfo.maximum - absinfo.minimum;
+
             ioctl(fd, EVIOCGABS(ABS_Y), &absinfo);
             worker->absRange.y = absinfo.minimum;
             worker->absRange.height = absinfo.maximum - absinfo.minimum;
+            platform.absRange.y = absinfo.minimum;
+            platform.absRange.height = absinfo.maximum - absinfo.minimum;
         }
 
         // Check for multiple absolute movement support (usually multitouch touchscreens)
@@ -1471,9 +1568,14 @@ static void ConfigureEvdevDevice(char *device)
             ioctl(fd, EVIOCGABS(ABS_X), &absinfo);
             worker->absRange.x = absinfo.minimum;
             worker->absRange.width = absinfo.maximum - absinfo.minimum;
+            platform.absRange.x = absinfo.minimum;
+            platform.absRange.width = absinfo.maximum - absinfo.minimum;
+
             ioctl(fd, EVIOCGABS(ABS_Y), &absinfo);
             worker->absRange.y = absinfo.minimum;
             worker->absRange.height = absinfo.maximum - absinfo.minimum;
+            platform.absRange.y = absinfo.minimum;
+            platform.absRange.height = absinfo.maximum - absinfo.minimum;
         }
     }
 
@@ -1533,15 +1635,20 @@ static void ConfigureEvdevDevice(char *device)
             worker->isMultitouch? "multitouch " : "",
             worker->isTouch? "touchscreen " : "",
             worker->isGamepad? "gamepad " : "");
+        platform.mouseFd = worker->fd;
+
+        // NOTE: moved the mouse/touch/gesture input to PollInputEvents()/
+        //       so added the "platform.mouseFd = worker->fd;" line above
+        //       and commented the thread code below:
 
         // Create a thread for this device
-        int error = pthread_create(&worker->threadId, NULL, &EventThread, (void *)worker);
-        if (error != 0)
-        {
-            TRACELOG(LOG_WARNING, "RPI: Failed to create input device thread: %s (error: %d)", device, error);
-            worker->threadId = 0;
-            close(fd);
-        }
+        //int error = pthread_create(&worker->threadId, NULL, &EventThread, (void *)worker);
+        //if (error != 0)
+        //{
+        //    TRACELOG(LOG_WARNING, "RPI: Failed to create input device thread: %s (error: %d)", device, error);
+        //    worker->threadId = 0;
+        //    close(fd);
+        //}
 
 #if defined(USE_LAST_TOUCH_DEVICE)
         // Find touchscreen with the highest index
@@ -1574,27 +1681,6 @@ static void ConfigureEvdevDevice(char *device)
 // Poll and process evdev keyboard events
 static void PollKeyboardEvents(void)
 {
-    // Scancode to keycode mapping for US keyboards
-    // TODO: Replace this with a keymap from the X11 to get the correct regional map for the keyboard:
-    // Currently non US keyboards will have the wrong mapping for some keys
-    static const int keymapUS[] = {
-        0, 256, 49, 50, 51, 52, 53, 54, 55, 56, 57, 48, 45, 61, 259, 258, 81, 87, 69, 82, 84,
-        89, 85, 73, 79, 80, 91, 93, 257, 341, 65, 83, 68, 70, 71, 72, 74, 75, 76, 59, 39, 96,
-        340, 92, 90, 88, 67, 86, 66, 78, 77, 44, 46, 47, 344, 332, 342, 32, 280, 290, 291,
-        292, 293, 294, 295, 296, 297, 298, 299, 282, 281, 327, 328, 329, 333, 324, 325,
-        326, 334, 321, 322, 323, 320, 330, 0, 85, 86, 300, 301, 89, 90, 91, 92, 93, 94, 95,
-        335, 345, 331, 283, 346, 101, 268, 265, 266, 263, 262, 269, 264, 267, 260, 261,
-        112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 347, 127,
-        128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143,
-        144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159,
-        160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175,
-        176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191,
-        192, 193, 194, 0, 0, 0, 0, 0, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210,
-        211, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224, 225, 226,
-        227, 228, 229, 230, 231, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242,
-        243, 244, 245, 246, 247, 248, 0, 0, 0, 0, 0, 0, 0
-    };
-
     int fd = platform.keyboardFd;
     if (fd == -1) return;
 
@@ -1638,6 +1724,18 @@ static void PollKeyboardEvents(void)
                     }
                 #endif
 
+                    // Detect char presses (unicode)
+                    if (event.value == 1)
+                    {
+                        // Check if there is space available in the queue
+                        if (CORE.Input.Keyboard.charPressedQueueCount < MAX_CHAR_PRESSED_QUEUE)
+                        {
+                            // Add character to the queue
+                            CORE.Input.Keyboard.charPressedQueue[CORE.Input.Keyboard.charPressedQueueCount] = EvkeyToUnicodeLUT[event.code];
+                            CORE.Input.Keyboard.charPressedQueueCount++;
+                        }
+                    }
+
                     if (CORE.Input.Keyboard.currentKeyState[CORE.Input.Keyboard.exitKey] == 1) CORE.Window.shouldClose = true;
 
                     TRACELOGD("RPI: KEY_%s ScanCode: %4i KeyCode: %4i", (event.value == 0)? "UP" : "DOWN", event.code, keycode);
@@ -1650,6 +1748,7 @@ static void PollKeyboardEvents(void)
 // Input device events reading thread
 static void *EventThread(void *arg)
 {
+/*
     struct input_event event = { 0 };
     InputEventWorker *worker = (InputEventWorker *)arg;
 
@@ -1666,8 +1765,16 @@ static void *EventThread(void *arg)
             {
                 if (event.code == REL_X)
                 {
-                    CORE.Input.Mouse.currentPosition.x += event.value;
-                    CORE.Input.Touch.position[0].x = CORE.Input.Mouse.currentPosition.x;
+                    if (platform.cursorRelative)
+                    {
+                        CORE.Input.Mouse.currentPosition.x -= event.value;
+                        CORE.Input.Touch.position[0].x = CORE.Input.Mouse.currentPosition.x;
+                    }
+                    else
+                    {
+                        CORE.Input.Mouse.currentPosition.x += event.value;
+                        CORE.Input.Touch.position[0].x = CORE.Input.Mouse.currentPosition.x;
+                    }
 
                     touchAction = 2;    // TOUCH_ACTION_MOVE
                     gestureUpdate = true;
@@ -1675,8 +1782,16 @@ static void *EventThread(void *arg)
 
                 if (event.code == REL_Y)
                 {
-                    CORE.Input.Mouse.currentPosition.y += event.value;
-                    CORE.Input.Touch.position[0].y = CORE.Input.Mouse.currentPosition.y;
+                    if (platform.cursorRelative)
+                    {
+                        CORE.Input.Mouse.currentPosition.y -= event.value;
+                        CORE.Input.Touch.position[0].y = CORE.Input.Mouse.currentPosition.y;
+                    }
+                    else
+                    {
+                        CORE.Input.Mouse.currentPosition.y += event.value;
+                        CORE.Input.Touch.position[0].y = CORE.Input.Mouse.currentPosition.y;
+                    }
 
                     touchAction = 2;    // TOUCH_ACTION_MOVE
                     gestureUpdate = true;
@@ -1815,7 +1930,7 @@ static void *EventThread(void *arg)
     }
 
     close(worker->fd);
-
+*/
     return NULL;
 }
 
